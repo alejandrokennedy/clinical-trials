@@ -1,25 +1,25 @@
 <script lang="ts">
 	import { footerState } from "$utils/footerState.svelte";
+	import { MOBILE_BREAKPOINT, FOOTER_H, headerHeight } from "$utils/chrome";
 	// import RefreshCopy from "$components/helpers/RefreshCopy.svelte";
 
 	interface Props {
 		copy?: any;
 		darkMode?: boolean;
+		/** Does this story show the scroll-progress bar? Bigger features often
+		 *  drop it to reclaim vertical space. Adds PROG_BAR_H on desktop. */
+		progressBar?: boolean;
 	}
 
-	let { copy, darkMode = false }: Props = $props();
-	// let { copy: initialCopy, darkMode = false }: Props = $props();
+	let { copy, darkMode = false, progressBar = false }: Props = $props();
+	// let { copy: initialCopy, darkMode = false, progressBar = false }: Props = $props();
 	// let copy = $state(initialCopy);
 	// const DOC_ID = "your-google-doc-id-here";
-
-	const HEADER_H = { mobile: 48, desktop: 65 };
-	const FOOTER_H = 54.6;
-	const MOBILE_BREAKPOINT = 768;
 
 	let width = $state(1024);
 	let height = $state(800);
 	let isMobile = $derived(width <= MOBILE_BREAKPOINT);
-	let headerH = $derived(isMobile ? HEADER_H.mobile : HEADER_H.desktop);
+	let headerH = $derived(headerHeight(isMobile, progressBar));
 	let footerH = $derived(footerState.visible ? FOOTER_H : 0);
 </script>
 

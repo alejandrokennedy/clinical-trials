@@ -1,0 +1,44 @@
+/**
+ * Shared SveltePlot container styles.
+ *
+ * Imported by the component that needs it (e.g. PlotStory.svelte) rather than
+ * added to the global stylesheet chain, so copying a plot template into a
+ * project brings its CSS with it. Vite dedupes repeat imports.
+ *
+ * Svelte's scoped styles don't compose, which is why this is a plain .css file
+ * instead of something a component could `extend`.
+ */
+
+.plot-container {
+	/* Side padding for the chart. Override per project with the custom property
+	   rather than editing here — e.g. style:--plot-container-width="84%". */
+	width: var(--plot-container-width, 92%);
+	margin: 0 auto;
+	/* SveltePlot's axis/legend text inherits this. Set explicitly so the chart
+	   doesn't drift when the surrounding body font changes. */
+	font-family: var(--plot-font, Helvetica, Arial, sans-serif);
+}
+
+/**
+ * Undo a global `svg { width: 100% }` so SveltePlot can size its own SVG.
+ *
+ * NOT currently live in this project: +layout.svelte imports scoped.css, whose
+ * chain has no such rule. But src/styles/app.css:107 does set it, app.css ships
+ * with the starter, and swapping it back in silently stretches every chart. This
+ * is the same fix Geismar.svelte:202 had to apply as a one-off `:global(#aqmesh
+ * svg)`; keeping it here means no future project rediscovers it.
+ *
+ * `max-width` caps the SVG at the container and prevents the 1px fractional
+ * bleed that `width: auto` alone can leave.
+ */
+.plot-container svg {
+	width: auto;
+	max-width: 100%;
+	height: auto;
+}
+
+@media (max-width: 768px) {
+	.plot-container {
+		width: var(--plot-container-width-mobile, 96%);
+	}
+}
