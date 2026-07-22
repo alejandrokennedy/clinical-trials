@@ -17,7 +17,7 @@
 	import "$styles/plot.css";
 	import { footerState } from "$utils/footerState.svelte";
 	import { MOBILE_BREAKPOINT, FOOTER_H, headerHeight } from "$utils/chrome";
-	import { Plot, DifferenceY, Line, Text } from "svelteplot";
+	import { Plot, DifferenceY, Line, Text, Dot } from "svelteplot";
 	import ScrolloSteps from "$components/helpers/ScrolloSteps.svelte";
 	import chapters from "$data/plotStorySteps.json";
 	import { Tween } from "svelte/motion";
@@ -113,6 +113,17 @@
 	const US_COLOR = "#d73027"; // warm / red
 	const AU_COLOR = "#4575b4"; // cool / blue
 
+	// Difference-fill colours. SveltePlot ignores a colour-scale `range`, so these
+	// are applied to the area paths via CSS custom properties (see the style block).
+	// Light red to echo the US line; light blue for Australia. Tweak freely.
+	const US_FILL = "#FFAFB3"; // light red / salmon
+	// const US_FILL = "#f4a582"; // light red / salmon
+	const AU_FILL = "#92c5de"; // light blue
+
+	// Muted colour for axis ticks + labels (applied as `color`/currentColor).
+	const AXIS_MUTED = "#4b4b4b";
+	const CURVE = "catmull-rom";
+
 	// ── Scroll wiring ───────────────────────────────────────────────────────────
 	// ScrolloSteps reports the active step index and a 0→1 progress within it.
 	let step = $state<number | null | undefined>(undefined);
@@ -134,6 +145,35 @@
 		reveal.target = target;
 	});
 	let p = $derived(reveal.current);
+
+	// Chart decoration (axes, labels, grid) stays hidden until the reveal reaches
+	// `FADE_START` — letting the lines grow a little first — then fades in, fully
+	// on by `FADE_END`. Both are 0→1 fractions of the reveal.
+	const FADE_START = 0.15;
+	const FADE_END = 0.30;
+	let decorationFade = $derived(
+		Math.min(1, Math.max(0, (p - FADE_START) / (FADE_END - FADE_START)))
+	);
+
+	// The intro note stays fully visible until the reveal is `NOTE_FADE_START` of
+	// the way through (halfway, by default), then fades out by `NOTE_FADE_END`.
+	const NOTE_FADE_START = 0.5;
+	const NOTE_FADE_END = 0.8;
+	let noteOpacity = $derived(
+		Math.min(1, Math.max(0, (NOTE_FADE_END - p) / (NOTE_FADE_END - NOTE_FADE_START)))
+	);
+
+	// ── 2016 crossover annotation ───────────────────────────────────────────────
+	// The lines cross (US = Australia per capita) between 2016 and 2017; ~2016.5.
+	// Kept in chart coordinates so the callout + leader stay anchored on resize.
+	const CROSS = { year: 2016.5, value: 0.412 }; // the crossover point
+	const CROSS_LABEL = { year: 2011, value: 0.74 }; // where the callout text sits
+	// Fade the callout in quickly once the reveal scrubs past the crossover year.
+	const CROSS_REVEAL = (CROSS.year - X0) / (X1 - X0); // ≈ 0.66
+	const CROSS_FADE_SPAN = 0.04; // small → quick fade-in
+	let crossFade = $derived(
+		Math.min(1, Math.max(0, (p - CROSS_REVEAL) / CROSS_FADE_SPAN))
+	);
 
 	// Reveal the series left→right: keep points up to the moving cutoff year and
 	// add one interpolated point exactly at the cutoff so the line/fill grow
@@ -182,6 +222,10 @@
 				bind:clientWidth={measuredWidth}
 				bind:clientHeight={measuredHeight}
 				style:--fig-w={`${chartWidth}px`}
+				style:--decoration-opacity={decorationFade}
+				style:--us-fill={US_FILL}
+				style:--au-fill={AU_FILL}
+				style:--axis-muted={AXIS_MUTED}
 			>
 				<!-- Render gate: wait for a real measurement before mounting Plot.
 				     On the first paint the container measures 0, which makes the plot
@@ -193,22 +237,20 @@
 					<Plot
 						width={chartWidth}
 						height={chartHeight}
-						marginLeft={52}
-						marginRight={104}
+						marginLeft={isMobile ? 36 : 52}
+						marginRight={isMobile ? 64 : 100}
 						x={{
 							domain: [X0, X1],
 							inset: 4,
-							label: "Start Year",
+							label: "",
 							tickFormat: { useGrouping: false }
 						}}
 						y={{
 							domain: [0, Y_MAX],
 							grid: true,
-							label: "Phase 1 trials per 100,000 residents"
-						}}
-						color={{
-							domain: ["United States higher", "Australia higher"],
-							scheme: "rdylbu"
+							label: "Phase 1 trials per 100,000 residents",
+							// tickSpacing: 80,
+							ticks: [0, 0.1, 0.2]
 						}}
 					>
 						<!-- Invisible full-range anchor: keeps the scales and measured
@@ -232,6 +274,7 @@
 								positiveFill="United States higher"
 								negativeFill="Australia higher"
 								fillOpacity={0.32}
+								curve={CURVE}
 							/>
 							<!-- Both series as lines. `scale: null` keeps the literal colours. -->
 							<Line
@@ -240,6 +283,7 @@
 								y="auPer100k"
 								stroke={{ value: AU_COLOR, scale: null }}
 								strokeWidth={2.5}
+								curve={CURVE}
 							/>
 							<Line
 								data={visible}
@@ -247,6 +291,7 @@
 								y="usPer100k"
 								stroke={{ value: US_COLOR, scale: null }}
 								strokeWidth={2.5}
+								curve={CURVE}
 							/>
 						{/if}
 						{#if head && p > 0.015}
@@ -255,10 +300,11 @@
 								data={[head]}
 								x="year"
 								y="usPer100k"
-								text="United States"
+								text={isMobile ? "United\nStates" : "United States"}
 								fill={{ value: US_COLOR, scale: null }}
 								fontWeight={600}
 								textAnchor="start"
+								lineAnchor="bottom"
 								dx={8}
 								dy={-6}
 							/>
@@ -274,9 +320,50 @@
 								dy={12}
 							/>
 						{/if}
+						{#if crossFade > 0}
+							<!-- 2016 crossover callout. Leader line + dot + text, all in chart
+							     coords so they stay anchored to the data point. Fades in quickly
+							     once the reveal scrubs past ~2016 (crossFade). -->
+							<Line
+								data={[CROSS_LABEL, CROSS]}
+								x="year"
+								y="value"
+								stroke={{ value: AXIS_MUTED, scale: null }}
+								strokeWidth={1}
+								opacity={crossFade * 0.6}
+							/>
+							<Dot
+								data={[CROSS]}
+								x="year"
+								y="value"
+								r={3.5}
+								fill={{ value: AXIS_MUTED, scale: null }}
+								opacity={crossFade}
+							/>
+							<Text
+								data={[CROSS_LABEL]}
+								x="year"
+								y="value"
+								text={"Australia overtakes\nthe U.S. per capita"}
+								fill={{ value: AU_COLOR, scale: null }}
+								fontWeight={600}
+								textAnchor="middle"
+								lineAnchor="bottom"
+								dy={-6}
+								opacity={crossFade}
+							/>
+						{/if}
 					</Plot>
 				{/if}
 			</div>
+
+			<!-- Intro annotation: C&EN-style prose centered in the top quarter of the
+			     chart. Plain HTML (not a Text mark) so it gets real serif prose,
+			     wrapping and line-height. Fades out as the chart decoration fades in. -->
+			<p class="intro-note" style:opacity={noteOpacity}>
+				For the first 16 years of this millennium, the U.S. completed (?) more phase 1
+				trials per 100,000 residents than Australia.
+			</p>
 		</div>
 	</div>
 
@@ -327,6 +414,61 @@
 		max-width: none;
 	}
 
+	/* Chart decoration (axes, their titles, grid) fades in with scroll, driven by
+	   --decoration-opacity (0 at the intro → 1 by FADE_END). */
+	.plot-container :global(.axis-x),
+	.plot-container :global(.axis-y),
+	.plot-container :global(.grid-x),
+	.plot-container :global(.grid-y) {
+		opacity: var(--decoration-opacity, 0);
+	}
+
+	/* The axis titles (incl. the y-axis label) sit outside the axis groups and
+	   SveltePlot sets its own `opacity: 0.8` on them at equal specificity, so
+	   `!important` is needed for the fade to win. */
+	.plot-container :global(.axis-x-title),
+	.plot-container :global(.axis-y-title) {
+		opacity: var(--decoration-opacity, 0) !important;
+	}
+
+	/* Mute axis ticks + labels via colour (currentColor drives tick text, tick
+	   lines and the axis titles). Separate property from the fade opacity above,
+	   so the two never conflict. */
+	.plot-container :global(.axis-x),
+	.plot-container :global(.axis-y),
+	.plot-container :global(.axis-x-title),
+	.plot-container :global(.axis-y-title) {
+		color: var(--axis-muted, currentColor);
+	}
+
+	/* Difference-fill colours. SveltePlot sets the area fill inline via its colour
+	   scale (which ignores a custom `range`), so override with !important. Positive
+	   area = where the US leads (y2 > y1). */
+	.plot-container :global(.positive.difference .area) {
+		fill: var(--us-fill) !important;
+	}
+
+	.plot-container :global(.negative.difference .area) {
+		fill: var(--au-fill) !important;
+	}
+
+	/* C&EN-style prose annotation, centered in the top quarter of the chart. */
+	.intro-note {
+		position: absolute;
+		top: 12%;
+		left: 50%;
+		transform: translateX(-50%);
+		width: 82%;
+		max-width: 600px;
+		margin: 0;
+		font-family: var(--font-body, Georgia, "Times New Roman", Times, serif);
+		font-size: var(--18px, 1.125rem);
+		line-height: 30px;
+		color: #242424; /* C&EN body text */
+		text-align: center;
+		pointer-events: none;
+	}
+
 	/* Foreground scrolly column sits above the sticky chart. pointer-events are
 	   re-enabled on the step text itself inside ScrolloSteps. */
 	.foreground-overlay {
@@ -367,5 +509,23 @@
 	   figure would want a different rule. */
 	.plot-container {
 		height: 96%;
+		/* Restore container side margins (plot.css uses a symmetric 92%/96%), but
+		   asymmetric: the RIGHT margin is smaller because the chart's own
+		   marginRight already reserves room there for the series labels. Use an
+		   EXPLICIT width (not auto) — an auto width lets the pinned figure feed
+		   back into the measured container size and re-triggers the resize loop.
+		   width + margins sum to 100%. */
+		width: 94.5%;
+		margin-left: 4%;
+		margin-right: 1.5%;
+	}
+
+	/* Mobile: near-full width for more chart room (the earlier reason for 100%). */
+	@media (max-width: 768px) {
+		.plot-container {
+			width: 99%;
+			margin-left: 0.5%;
+			margin-right: 0.5%;
+		}
 	}
 </style>
