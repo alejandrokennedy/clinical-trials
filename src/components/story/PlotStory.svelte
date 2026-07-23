@@ -123,6 +123,39 @@
 	// Muted colour for axis ticks + labels (applied as `color`/currentColor).
 	const AXIS_MUTED = "#4b4b4b";
 	const CURVE = "catmull-rom";
+	// const CURVE = "linear";
+
+	// ── Config toggles ───────────────────────────────────────────────────────────
+	// Show the ScrolloSteps text boxes (bg + shadow). Off while the steps are empty;
+	// flip to true to pull the reference boxes back in.
+	const SHOW_STEP_BOXES = false;
+	// Scroll length of the step that drives the time-series animation (the 2nd
+	// step). Longer → the reveal is spread over more scrolling.
+	const ANIM_STEP_PADDING = "100vh";
+
+	// ── Progressive y-gridlines (fade in as the data grows tall enough) ──────────
+	const Y_TICKS = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0];
+	// Timing knob: how soon each gridline/number fades in relative to the data
+	// reaching it. Higher = sooner.
+	const TICK_LEAD = 0.06; // gridline appears a touch before the data reaches it
+	const TICK_FADE_SPAN = 0.08; // data-units over which each gridline fades in
+	// The x-year labels carry SveltePlot's built-in 0.8 axis-text opacity; match it
+	// on our custom y-numbers so the two read the same.
+	const AXIS_TEXT_OP = 0.8;
+
+	// ── End-of-animation ramp ────────────────────────────────────────────────────
+	// The top gridline/number (1.0) fades in over the last TAIL_SPAN of the reveal
+	// (the data peaks at ~0.96, so 1.0 needs its own cue).
+	const TAIL_SPAN = 0.06;
+
+	// ── Year dots ────────────────────────────────────────────────────────────────
+	// The dots pop in via their OWN time-based tween (not tied to scroll), fired
+	// once the reveal passes DOT_TRIGGER. Scroll-tied growth made 26×2 dots re-render
+	// every frame near the end → laggy; a one-shot tween avoids that.
+	const SHOW_DOTS = true; // lever: flip to false to remove the year dots
+	const DOT_R = 3; // full dot radius, px
+	const DOT_TRIGGER = 1; // reveal fraction at which the dots start growing in
+	const DOT_ANIM_MS = 450; // duration of the dot pop-in (its own clock)
 
 	// ── Scroll wiring ───────────────────────────────────────────────────────────
 	// ScrolloSteps reports the active step index and a 0→1 progress within it.
@@ -139,41 +172,69 @@
 		return stepProgress ?? 0; // scrubbing: follow progress
 	});
 
-	// A tween smooths scroll jitter into fluid line growth.
-	const reveal = new Tween(0, { duration: 250, easing: cubicOut });
+	// A tween smooths scroll jitter into fluid line growth, but it also *trails* the
+	// scroll by roughly this duration — the "slight lag" in the reveal. Lower it for
+	// snappier tracking, raise it for more smoothing (0 = follow the scroll exactly).
+	// const ANIM_TWEEN_MS = 150;
+	const ANIM_TWEEN_MS = 0;
+	const reveal = new Tween(0, { duration: ANIM_TWEEN_MS, easing: cubicOut });
 	$effect(() => {
 		reveal.target = target;
 	});
 	let p = $derived(reveal.current);
+
+	const clamp = (v: number) => Math.min(1, Math.max(0, v));
 
 	// Chart decoration (axes, labels, grid) stays hidden until the reveal reaches
 	// `FADE_START` — letting the lines grow a little first — then fades in, fully
 	// on by `FADE_END`. Both are 0→1 fractions of the reveal.
 	const FADE_START = 0.15;
 	const FADE_END = 0.30;
-	let decorationFade = $derived(
-		Math.min(1, Math.max(0, (p - FADE_START) / (FADE_END - FADE_START)))
-	);
+	let decorationFade = $derived(clamp((p - FADE_START) / (FADE_END - FADE_START)));
 
-	// The intro note stays fully visible until the reveal is `NOTE_FADE_START` of
-	// the way through (halfway, by default), then fades out by `NOTE_FADE_END`.
-	const NOTE_FADE_START = 0.5;
-	const NOTE_FADE_END = 0.8;
-	let noteOpacity = $derived(
-		Math.min(1, Math.max(0, (NOTE_FADE_END - p) / (NOTE_FADE_END - NOTE_FADE_START)))
-	);
+	// End-of-animation ramp: drives the top (1.0) gridline/number, which fades in
+	// over the last TAIL_SPAN of the reveal.
+	let endFade = $derived(clamp((p - (1 - TAIL_SPAN)) / TAIL_SPAN));
+
+	// Dots pop-in: a self-contained tween on its OWN clock (DOT_ANIM_MS), fired once
+	// the reveal passes DOT_TRIGGER. We grow the actual RADIUS (not a CSS scale):
+	// SveltePlot recomputes each symbol path centred at (0,0) and leaves the
+	// translate(x,y) untouched, so every dot grows about its own data point. (A CSS
+	// `scale` drifts from the top-left because SveltePlot's translate lives in the
+	// transform attribute, which composes outside an individual `scale`.) Only the
+	// two dot marks re-render per frame, so it stays cheap.
+	const dotGrow = new Tween(0, { duration: DOT_ANIM_MS, easing: cubicOut });
+	$effect(() => {
+		dotGrow.target = SHOW_DOTS && p >= DOT_TRIGGER ? 1 : 0;
+	});
 
 	// ── 2016 crossover annotation ───────────────────────────────────────────────
 	// The lines cross (US = Australia per capita) between 2016 and 2017; ~2016.5.
 	// Kept in chart coordinates so the callout + leader stay anchored on resize.
 	const CROSS = { year: 2016.5, value: 0.412 }; // the crossover point
-	const CROSS_LABEL = { year: 2011, value: 0.74 }; // where the callout text sits
-	// Fade the callout in quickly once the reveal scrubs past the crossover year.
+	const CROSS_LABEL = { year: 2019, value: 0.2 }; // callout text: lower-right of dot
 	const CROSS_REVEAL = (CROSS.year - X0) / (X1 - X0); // ≈ 0.66
-	const CROSS_FADE_SPAN = 0.04; // small → quick fade-in
-	let crossFade = $derived(
-		Math.min(1, Math.max(0, (p - CROSS_REVEAL) / CROSS_FADE_SPAN))
-	);
+	// Shared fade duration for ALL annotation text (intro, lead note, callout).
+	const CROSS_FADE_SPAN = 0.04;
+	// Leader line endpoints — symmetric gap from the text and the dot. LEADER_GAP
+	// (fraction of the text→dot span, applied to both ends) is the tuning knob.
+	const lerp = (a: number, b: number, u: number) => a + (b - a) * u;
+	const LEADER_GAP = 0.95;
+	const leaderA = {
+		year: lerp(CROSS_LABEL.year, CROSS.year, LEADER_GAP),
+		value: lerp(CROSS_LABEL.value, CROSS.value, LEADER_GAP)
+	}; // near the text
+	const leaderB = {
+		year: lerp(CROSS_LABEL.year, CROSS.year, 1 - LEADER_GAP),
+		value: lerp(CROSS_LABEL.value, CROSS.value, 1 - LEADER_GAP)
+	}; // near the dot
+
+	// Annotation text handoff at the crossover, all over CROSS_FADE_SPAN: the intro
+	// note fades OUT ending at the crossover, while the callout + lead note fade IN
+	// starting at the crossover (clean centred handoff, no overlap).
+	let crossFade = $derived(clamp((p - CROSS_REVEAL) / CROSS_FADE_SPAN));
+	let noteOpacity = $derived(clamp((CROSS_REVEAL - p) / CROSS_FADE_SPAN)); // intro out
+	let leadOpacity = $derived(crossFade); // lead in, together with the callout
 
 	// Reveal the series left→right: keep points up to the moving cutoff year and
 	// add one interpolated point exactly at the cutoff so the line/fill grow
@@ -205,6 +266,24 @@
 	// x (p≈0) gives SveltePlot a zero-width domain and NaN geometry.
 	let hasSpan = $derived(
 		visible.length > 1 && visible[visible.length - 1].year > visible[0].year
+	);
+
+	// Largest value drawn so far → which gridlines are "needed" yet. Non-decreasing
+	// because `visible` always spans from 2000 to the moving cutoff.
+	let maxVisible = $derived(
+		visible.reduce((m, d) => Math.max(m, d.usPer100k, d.auPer100k), 0)
+	);
+	const tickReveal = (t: number) =>
+		Math.min(1, Math.max(0, (maxVisible - t + TICK_LEAD) / TICK_FADE_SPAN));
+	// Per-tick opacity: the normal data-driven reveal, except the top tick (1.0) —
+	// which the data never reaches — fades in at the very end via endFade.
+	const tickOpacity = (t: number) =>
+		decorationFade * (t >= Y_MAX ? endFade : tickReveal(t));
+
+	// Year dots (one per line per year); they grow in together at the very end,
+	// radius = DOT_R * endFade. Positions are static.
+	let yearDots = $derived(
+		data.map((d) => ({ year: d.year, us: d.usPer100k, au: d.auPer100k }))
 	);
 </script>
 
@@ -247,12 +326,38 @@
 						}}
 						y={{
 							domain: [0, Y_MAX],
-							grid: true,
+							grid: false,
 							label: "Phase 1 trials per 100,000 residents",
-							// tickSpacing: 80,
-							ticks: [0, 0.1, 0.2]
+							ticks: Y_TICKS
 						}}
 					>
+						<!-- Progressive gridlines: a horizontal Line per tick spanning the full
+						     x-domain (so x2 comes from the x-scale, not facetWidth → no NaN).
+						     Each fades in as the data grows tall enough to need it, times the
+						     overall decoration fade. -->
+						{#each Y_TICKS as t (t)}
+							<Line
+								data={[{ x: X0, y: t }, { x: X1, y: t }]}
+								x="x"
+								y="y"
+								stroke={{ value: AXIS_MUTED, scale: null }}
+								strokeWidth={1}
+								strokeOpacity={0.15}
+								opacity={tickOpacity(t)}
+							/>
+							<!-- Tick number, faded in tandem with its gridline (implicit axis
+							     numbers hidden via CSS). -->
+							<Text
+								data={[{ x: X0, y: t }]}
+								x="x"
+								y="y"
+								text={String(+t.toFixed(1))}
+								fill={{ value: AXIS_MUTED, scale: null }}
+								textAnchor="end"
+								dx={-8}
+								opacity={AXIS_TEXT_OP * tickOpacity(t)}
+							/>
+						{/each}
 						<!-- Invisible full-range anchor: keeps the scales and measured
 						     plot width stable while the visible data is still empty/collapsed
 						     (otherwise a zero-width reveal yields NaN geometry). -->
@@ -293,31 +398,42 @@
 								strokeWidth={2.5}
 								curve={CURVE}
 							/>
+							<!-- Year dots: TWO marks (one per series, all 26 points each). The
+							     radius grows in place via the dotGrow tween — 26× fewer marks than
+							     one-per-dot, and no top-left drift. -->
+							{#if SHOW_DOTS && dotGrow.current > 0.001}
+								<Dot data={yearDots} x="year" y="au" r={DOT_R * dotGrow.current} fill={{ value: AU_COLOR, scale: null }} stroke="white" strokeWidth={1} />
+								<Dot data={yearDots} x="year" y="us" r={DOT_R * dotGrow.current} fill={{ value: US_COLOR, scale: null }} stroke="white" strokeWidth={1} />
+							{/if}
 						{/if}
 						{#if head && p > 0.015}
-							<!-- Labels ride the moving head of each line, just to its right. -->
+							<!-- Labels ride the moving head of each line, just to its right, and
+							     hug the line tip: US sits just above (lineAnchor bottom), Australia
+							     just below (lineAnchor top), so they stay clear of each other at the
+							     crossover but read as attached to the line ends. -->
 							<Text
 								data={[head]}
 								x="year"
 								y="usPer100k"
-								text={isMobile ? "United\nStates" : "United States"}
+								text={isMobile ? "United\nStates" : "U.S. 🇺🇸"}
 								fill={{ value: US_COLOR, scale: null }}
 								fontWeight={600}
 								textAnchor="start"
 								lineAnchor="bottom"
 								dx={8}
-								dy={-6}
+								dy={-2}
 							/>
 							<Text
 								data={[head]}
 								x="year"
 								y="auPer100k"
-								text="Australia"
+								text="Australia 🇦🇺"
 								fill={{ value: AU_COLOR, scale: null }}
 								fontWeight={600}
 								textAnchor="start"
+								lineAnchor="top"
 								dx={8}
-								dy={12}
+								dy={2}
 							/>
 						{/if}
 						{#if crossFade > 0}
@@ -325,7 +441,7 @@
 							     coords so they stay anchored to the data point. Fades in quickly
 							     once the reveal scrubs past ~2016 (crossFade). -->
 							<Line
-								data={[CROSS_LABEL, CROSS]}
+								data={[leaderA, leaderB]}
 								x="year"
 								y="value"
 								stroke={{ value: AXIS_MUTED, scale: null }}
@@ -348,8 +464,8 @@
 								fill={{ value: AU_COLOR, scale: null }}
 								fontWeight={600}
 								textAnchor="middle"
-								lineAnchor="bottom"
-								dy={-6}
+								lineAnchor="top"
+								dy={6}
 								opacity={crossFade}
 							/>
 						{/if}
@@ -364,6 +480,13 @@
 				For the first 16 years of this millennium, the U.S. completed (?) more phase 1
 				trials per 100,000 residents than Australia.
 			</p>
+
+			<!-- "Since 2016" lead note (the 2nd step's copy), top-left. Same prose
+			     style as the intro note; fades in as Australia takes the lead. -->
+			<p class="lead-note" style:opacity={leadOpacity}>
+				However, since 2016 Australia has taken the lead in phase 1 trials per
+				100,000 residents, driven by [x] and [y] factors.
+			</p>
 		</div>
 	</div>
 
@@ -373,6 +496,10 @@
 	<div
 		class="foreground-overlay"
 		style:margin-top={`calc(-1 * (100vh - ${headerH}px - ${footerH}px))`}
+		style:--anim-step-pad={ANIM_STEP_PADDING}
+		style:--scrollo-text-bg={SHOW_STEP_BOXES ? null : "transparent"}
+		style:--scrollo-text-bg-activeStep={SHOW_STEP_BOXES ? null : "transparent"}
+		style:--scrollo-text-shadow={SHOW_STEP_BOXES ? null : "none"}
 	>
 		<ScrolloSteps bind:step bind:stepProgress {chapters} top="75vh" smoothIntro />
 	</div>
@@ -441,6 +568,13 @@
 		color: var(--axis-muted, currentColor);
 	}
 
+	/* Hide the implicit y-axis tick marks AND numbers — we draw our own per-tick
+	   numbers as Text marks so they can fade in with their gridlines. */
+	.plot-container :global(.axis-y .tick line),
+	.plot-container :global(.axis-y .tick text) {
+		display: none;
+	}
+
 	/* Difference-fill colours. SveltePlot sets the area fill inline via its colour
 	   scale (which ignores a custom `range`), so override with !important. Positive
 	   area = where the US leads (y2 > y1). */
@@ -469,12 +603,36 @@
 		pointer-events: none;
 	}
 
+	/* "Since 2016" lead note — same prose style AND position as the intro note
+	   (centred, top quarter): the two cross-fade in place at the crossover. */
+	.lead-note {
+		position: absolute;
+		top: 12%;
+		left: 50%;
+		transform: translateX(-50%);
+		width: 82%;
+		max-width: 600px;
+		margin: 0;
+		font-family: var(--font-body, Georgia, "Times New Roman", Times, serif);
+		font-size: var(--18px, 1.125rem);
+		line-height: 30px;
+		color: #242424;
+		text-align: center;
+		pointer-events: none;
+	}
+
 	/* Foreground scrolly column sits above the sticky chart. pointer-events are
 	   re-enabled on the step text itself inside ScrolloSteps. */
 	.foreground-overlay {
 		position: relative;
 		z-index: 2;
 		pointer-events: none;
+	}
+
+	/* Elongate the step that drives the time-series animation (the 2nd step) so
+	   the reveal is spread over more scrolling. Controlled by --anim-step-pad. */
+	.foreground-overlay :global(.step:nth-child(2)) {
+		padding-bottom: var(--anim-step-pad, 60vh);
 	}
 
 	/* Colour the series names in the step copy to match the lines. */
