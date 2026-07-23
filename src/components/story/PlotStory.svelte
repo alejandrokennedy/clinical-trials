@@ -122,8 +122,8 @@
 
 	// Muted colour for axis ticks + labels (applied as `color`/currentColor).
 	const AXIS_MUTED = "#4b4b4b";
-	const CURVE = "catmull-rom";
-	// const CURVE = "linear";
+	// const CURVE = "catmull-rom";
+	const CURVE = "linear";
 
 	// ── Config toggles ───────────────────────────────────────────────────────────
 	// Show the ScrolloSteps text boxes (bg + shadow). Off while the steps are empty;
