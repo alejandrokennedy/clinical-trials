@@ -229,12 +229,20 @@
 		value: lerp(CROSS_LABEL.value, CROSS.value, 1 - LEADER_GAP)
 	}; // near the dot
 
-	// Annotation text handoff at the crossover, all over CROSS_FADE_SPAN: the intro
-	// note fades OUT ending at the crossover, while the callout + lead note fade IN
-	// starting at the crossover (clean centred handoff, no overlap).
+	// The callout fades in at the crossover over CROSS_FADE_SPAN.
 	let crossFade = $derived(clamp((p - CROSS_REVEAL) / CROSS_FADE_SPAN));
-	let noteOpacity = $derived(clamp((CROSS_REVEAL - p) / CROSS_FADE_SPAN)); // intro out
-	let leadOpacity = $derived(crossFade); // lead in, together with the callout
+
+	// Prose-note handoff at the crossover: a SCROLL transition (not a fade-in-place).
+	// The intro note scrolls up and out while the lead note scrolls up into its
+	// place, both driven by `p` so they stay pinned to the crossover. HANDOFF_SPAN
+	// (reveal-fraction window) and NOTE_SHIFT (px travelled) are the knobs.
+	const HANDOFF_SPAN = 0.08;
+	const NOTE_SHIFT = 48;
+	let handoff = $derived(clamp((p - CROSS_REVEAL) / HANDOFF_SPAN));
+	let introOpacity = $derived(1 - handoff);
+	let introShift = $derived(-handoff * NOTE_SHIFT); // up and out
+	let leadOpacity = $derived(handoff);
+	let leadShift = $derived((1 - handoff) * NOTE_SHIFT); // enters from below → 0
 
 	// Reveal the series left→right: keep points up to the moving cutoff year and
 	// add one interpolated point exactly at the cutoff so the line/fill grow
@@ -475,15 +483,23 @@
 
 			<!-- Intro annotation: C&EN-style prose centered in the top quarter of the
 			     chart. Plain HTML (not a Text mark) so it gets real serif prose,
-			     wrapping and line-height. Fades out as the chart decoration fades in. -->
-			<p class="intro-note" style:opacity={noteOpacity}>
+			     wrapping and line-height. Scrolls up and out at the crossover. -->
+			<p
+				class="intro-note"
+				style:opacity={introOpacity}
+				style:--note-shift={`${introShift}px`}
+			>
 				For the first 16 years of this millennium, the U.S. completed (?) more phase 1
 				trials per 100,000 residents than Australia.
 			</p>
 
-			<!-- "Since 2016" lead note (the 2nd step's copy), top-left. Same prose
-			     style as the intro note; fades in as Australia takes the lead. -->
-			<p class="lead-note" style:opacity={leadOpacity}>
+			<!-- "Since 2016" lead note (the 2nd step's copy). Same prose style as the
+			     intro note; scrolls up into place as Australia takes the lead. -->
+			<p
+				class="lead-note"
+				style:opacity={leadOpacity}
+				style:--note-shift={`${leadShift}px`}
+			>
 				However, since 2016 Australia has taken the lead in phase 1 trials per
 				100,000 residents, driven by [x] and [y] factors.
 			</p>
@@ -495,11 +511,9 @@
 	     put (sticky) while these steps scroll past and drive the animation. -->
 	<div
 		class="foreground-overlay"
+		class:hide-step-boxes={!SHOW_STEP_BOXES}
 		style:margin-top={`calc(-1 * (100vh - ${headerH}px - ${footerH}px))`}
 		style:--anim-step-pad={ANIM_STEP_PADDING}
-		style:--scrollo-text-bg={SHOW_STEP_BOXES ? null : "transparent"}
-		style:--scrollo-text-bg-activeStep={SHOW_STEP_BOXES ? null : "transparent"}
-		style:--scrollo-text-shadow={SHOW_STEP_BOXES ? null : "none"}
 	>
 		<ScrolloSteps bind:step bind:stepProgress {chapters} top="75vh" smoothIntro />
 	</div>
@@ -586,12 +600,15 @@
 		fill: var(--au-fill) !important;
 	}
 
-	/* C&EN-style prose annotation, centered in the top quarter of the chart. */
-	.intro-note {
+	/* C&EN-style prose annotations, centred in the top quarter of the chart. The two
+	   share style AND position; they hand off with a scroll transition at the
+	   crossover (translateY via --note-shift, set inline). */
+	.intro-note,
+	.lead-note {
 		position: absolute;
 		top: 12%;
 		left: 50%;
-		transform: translateX(-50%);
+		transform: translateX(-50%) translateY(var(--note-shift, 0px));
 		width: 82%;
 		max-width: 600px;
 		margin: 0;
@@ -603,22 +620,19 @@
 		pointer-events: none;
 	}
 
-	/* "Since 2016" lead note — same prose style AND position as the intro note
-	   (centred, top quarter): the two cross-fade in place at the crossover. */
-	.lead-note {
-		position: absolute;
-		top: 12%;
-		left: 50%;
-		transform: translateX(-50%);
-		width: 82%;
-		max-width: 600px;
-		margin: 0;
-		font-family: var(--font-body, Georgia, "Times New Roman", Times, serif);
-		font-size: var(--18px, 1.125rem);
-		line-height: 30px;
-		color: #242424;
-		text-align: center;
-		pointer-events: none;
+	/* Mobile: an active note still rests over the (full) chart, so give it a legible
+	   translucent card (mirrors ScrolloSteps' mobile card) so prose reads over the
+	   data as it scrolls through. Desktop stays transparent (empty upper-centre). */
+	@media (max-width: 768px) {
+		.intro-note,
+		.lead-note {
+			width: 88%;
+			padding: 0.6rem 0.9rem;
+			border-radius: 6px;
+			background: rgba(255, 255, 255, 0.82);
+			backdrop-filter: blur(2px);
+			-webkit-backdrop-filter: blur(2px);
+		}
 	}
 
 	/* Foreground scrolly column sits above the sticky chart. pointer-events are
@@ -627,6 +641,14 @@
 		position: relative;
 		z-index: 2;
 		pointer-events: none;
+	}
+
+	/* The scrolly chapters are empty (they only drive scroll — the real copy lives
+	   in the .intro-note / .lead-note overlays), so hide their boxes entirely. One
+	   rule kills bg + blur + shadow on every breakpoint, incl. the mobile card that
+	   the desktop --scrollo-* overrides don't reach. Flip SHOW_STEP_BOXES to show. */
+	.foreground-overlay.hide-step-boxes :global(.step p) {
+		display: none;
 	}
 
 	/* Elongate the step that drives the time-series animation (the 2nd step) so
