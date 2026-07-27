@@ -30,6 +30,19 @@ import { dirname, join, resolve, basename } from "node:path";
 
 const CSS_PREFIX = `.div-w-100 { overflow: visible; }
 
+/* A scrollytelling module's HEIGHT IS ITS SCROLL RUNWAY — the story is ~2.6
+   viewports tall and the scroll animation is scrubbed against that length. A
+   page-level height on the wrapper therefore doesn't shrink the module: because
+   .div-w-100 is overflow:visible, the story simply overflows and every AEM block
+   after it (recirculation, pre-footer, footer) gets laid out on top of the still-
+   scrolling region, so that content appears to scroll through the sticky chart.
+   Measured on a real page: a 'height: calc(100vh - 108px)' left 1548px of overlap.
+
+   Scoped with :has(.scrollo-story) so it only defends scrolly modules — the
+   static-image variant also uses .div-w-100 (for its credit rows), and an author
+   setting a height there is legitimate. */
+.div-w-100:has(.scrollo-story) { height: auto !important; }
+
 :where(.svelte-scope) :is(a, button, div, input, li) {
     -webkit-transition: none;
     transition: none;

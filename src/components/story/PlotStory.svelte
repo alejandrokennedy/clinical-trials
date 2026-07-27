@@ -173,18 +173,39 @@
 	// debounce above) there's no ResizeObserver feedback loop to break.
 	let overlayEl = $state<HTMLDivElement | null>(null);
 	let stepPx = $state(0);
+	// The chart step's absolute position in the document. Needed (with stepPx) to
+	// convert the crossover into a raw scrollY — see `handoffScrollY`.
+	let stepTopPx = $state(0);
+
+	// Trigger line ScrolloSteps is configured with. Kept as a number so the same
+	// value feeds the component AND the scroll math below; Scrollo computes its
+	// own triggerPointPx as `innerHeight * vh / 100`, so this must match.
+	const SCROLLO_TOP_VH = 75;
+
+	// Live scroll position / viewport height. Only read, never assigned.
+	let scrollY = $state(0);
+	let winH = $state(800);
 
 	$effect(() => {
 		const el = overlayEl?.querySelector<HTMLElement>(
 			`.step:nth-child(${CHART_STEP + 1})`
 		);
 		if (!el) return;
-		const measure = () => (stepPx = el.offsetHeight);
+		// Re-measure when the frame changes; the step's document top can shift if
+		// anything above it reflows.
+		void winH;
+		void width;
+		const measure = () => {
+			stepPx = el.offsetHeight;
+			stepTopPx = window.scrollY + el.getBoundingClientRect().top;
+		};
 		measure();
 		const ro = new ResizeObserver(measure);
 		ro.observe(el);
 		return () => ro.disconnect();
 	});
+
+	let triggerPx = $derived((SCROLLO_TOP_VH / 100) * winH);
 
 	// How far the intro note must travel to clear the top of the frame: its own
 	// offset from the container top plus its height, so the whole card is past the
@@ -343,7 +364,27 @@
 	);
 	let leadOpacity = $derived(clamp((p - CROSS_REVEAL) / CROSS_FADE_SPAN));
 	let introShift = $derived(-introTravelled * introTravel); // up and out
-	let leadShift = $derived((1 - leadTravelled) * leadTravel);
+
+	// ── Lead-note "keep scrolling" mode (mobile) ────────────────────────────────
+	// Desktop parks the lead note at its resting spot once it arrives. Mobile lets
+	// it carry straight on past that spot and out of the top of the frame, like
+	// body copy that simply scrolls by — clipping removes it, nothing pins it.
+	//
+	// This one can't run off `p`. `p` stops advancing the moment the reveal
+	// completes, which happens only ~45px of scroll after the note lands, so a
+	// p-driven version would inch past its mark and then freeze mid-frame — worse
+	// than parking cleanly. So the travel is measured from raw scrollY instead,
+	// anchored to the scroll position of the crossover: invert Scrollo's
+	// stepProgress formula — progress = (scrollY + trigger − stepTop) / stepPx —
+	// for progress == CROSS_REVEAL. Still 1:1, still pinned to the crossover, but
+	// it keeps going for as long as the reader keeps scrolling.
+	let handoffScrollY = $derived(stepTopPx + CROSS_REVEAL * stepPx - triggerPx);
+	let scrolledSinceHandoff = $derived(Math.max(0, scrollY - handoffScrollY));
+	let leadShift = $derived(
+		isMobile
+			? leadTravel - scrolledSinceHandoff // rises in, then keeps going (negative)
+			: (1 - leadTravelled) * leadTravel // rises in, then parks at 0
+	);
 
 	// Reveal the series left→right: keep points up to the moving cutoff year and
 	// add one interpolated point exactly at the cutoff so the line/fill grow
@@ -396,6 +437,9 @@
 	);
 </script>
 
+<!-- Read-only: drives the mobile lead note's post-arrival scroll (see leadShift). -->
+<svelte:window bind:scrollY bind:innerHeight={winH} />
+
 <!-- The series colours are published as custom properties here so the prose
      copy (.us / .au spans in the notes and the step text) can tint country names
      to match their lines WITHOUT re-typing the hex values and letting them drift
@@ -424,6 +468,26 @@
 				style:--au-fill={AU_FILL}
 				style:--axis-muted={AXIS_MUTED}
 			>
+				<!-- Legend for the two DIFFERENCE BANDS (not the lines — those carry
+				     their own labels at their right-hand tips). So the swatches are
+				     filled blocks in the band colours, and the wording matches what the
+				     shading means rather than naming the series.
+				     Absolutely positioned, so it costs the chart NO height:
+				     clientWidth/clientHeight (which feed the Plot) measure the content
+				     box, and out-of-flow children don't contribute to it. `top: 3px` is
+				     SveltePlot's measured offset for .axis-y-title, so the legend sits on
+				     the same line as "Phase 1 trials per 100,000 residents" at the
+				     opposite end of the row. Fades in with the rest of the chart
+				     furniture via decorationFade. -->
+				<div class="legend" style:opacity={decorationFade}>
+					<span class="legend-item">
+						<i class="swatch" style:background={US_FILL}></i>U.S. leads
+					</span>
+					<span class="legend-item">
+						<i class="swatch" style:background={AU_FILL}></i>Australia leads
+					</span>
+				</div>
+
 				<!-- Render gate: wait for a real measurement before mounting Plot.
 				     On the first paint the container measures 0, which makes the plot
 				     body height negative and SveltePlot throw. -->
@@ -434,8 +498,8 @@
 					<Plot
 						width={chartWidth}
 						height={chartHeight}
-						marginLeft={isMobile ? 36 : 52}
-						marginRight={isMobile ? 64 : 100}
+						marginLeft={isMobile ? 30 : 50}
+						marginRight={isMobile ? 60 : 80}
 						x={{
 							domain: [X0, X1],
 							inset: 4,
@@ -445,7 +509,7 @@
 						y={{
 							domain: [0, Y_MAX],
 							grid: false,
-							label: "Phase 1 trials per 100,000 residents",
+							label: "Phase 1 trials per 100,000 residents ↑",
 							ticks: Y_TICKS
 						}}
 					>
@@ -488,7 +552,14 @@
 						{#if hasSpan}
 							<!-- Fill: warm where the US leads, cool where Australia leads.
 							     positiveFill applies where y2 > y1, so y2 = US. Grows with
-							     the clipped data (bonus: the fill animates as we move right). -->
+							     the clipped data (bonus: the fill animates as we move right).
+							     NB: fillOpacity currently has NO visible effect. DifferenceY
+							     renders each band as stacked clipped paths (4 .area nodes for 2
+							     bands) and the painted result samples as exactly US_FILL /
+							     AU_FILL — alpha 1.0 — despite the computed fill-opacity reading
+							     0.32. Lighten the *_FILL constants to soften the bands; this
+							     number won't do it. The legend swatches use the raw constants
+							     for the same reason. -->
 							<DifferenceY
 								data={visible}
 								x="year"
@@ -496,9 +567,9 @@
 								y1="auPer100k"
 								positiveFill="United States higher"
 								negativeFill="Australia higher"
-								fillOpacity={0.32}
 								curve={CURVE}
 							/>
+								<!-- fillOpacity={0.32} -->
 							<!-- Both series as lines. `scale: null` keeps the literal colours. -->
 							<Line
 								data={visible}
@@ -629,8 +700,24 @@
 		style:margin-top={`calc(-1 * (100vh - ${headerH}px - ${footerH}px))`}
 		style:--anim-step-pad={ANIM_STEP_PADDING}
 	>
-		<ScrolloSteps bind:step bind:stepProgress {chapters} top="75vh" smoothIntro />
+		<ScrolloSteps
+			bind:step
+			bind:stepProgress
+			{chapters}
+			top={`${SCROLLO_TOP_VH}vh`}
+			smoothIntro
+		/>
 	</div>
+
+	<!-- Exit runway for the mobile lead note's "keep scrolling" mode. To clear the
+	     top of the frame it needs leadTravel + one frame height of scroll after the
+	     crossover; measured, the story ran out ~105px short and the paragraph froze
+	     half-out across the chart at max scroll. Sits inside .scrollo-story so it
+	     extends the sticky region, not just the page. Zero-height on desktop, where
+	     the note parks and this would only add dead scroll.
+	     Part of the keep-scrolling experiment — delete with it. -->
+	<div class="lead-exit-runway"></div>
+
 	<!-- uncomment below to pull directly from gdoc on page reload -->
 	<RefreshCopy docId={DOC_ID} bind:data={copy} />
 </div>
@@ -802,6 +889,18 @@
 		}
 	}
 
+	/* See the note in the markup — scroll room for the mobile lead note to finish
+	   leaving the frame. */
+	.lead-exit-runway {
+		height: 0;
+	}
+
+	@media (max-width: 768px) {
+		.lead-exit-runway {
+			height: 25vh;
+		}
+	}
+
 	/* Foreground scrolly column sits above the sticky chart. pointer-events are
 	   re-enabled on the step text itself inside ScrolloSteps. */
 	.foreground-overlay {
@@ -863,8 +962,49 @@
 		   back into the measured container size and re-triggers the resize loop.
 		   width + margins sum to 100%. */
 		width: 94.5%;
-		margin-left: 4%;
-		margin-right: 1.5%;
+		margin-left: 2%;
+		/*margin-right: 1.5%;*/
+		margin-right: 2%;
+		/* Anchor for .legend. Safe next to the resize-loop rules above: position
+		   doesn't change the element's own box, only its descendants' reference. */
+		position: relative;
+	}
+
+	/* Series legend, top-right, on the same line as SveltePlot's y-axis title.
+	   Inherits .plot-container's --plot-font, so it matches the axis typography
+	   rather than the surrounding serif prose. */
+	.legend {
+		position: absolute;
+		top: 3px; /* measured offset of .axis-y-title within .plot-container */
+		right: 0;
+		display: flex;
+		align-items: center;
+		gap: 14px;
+		font-size: 11px;
+		line-height: 13px;
+		pointer-events: none;
+	}
+
+	/* Muted like the y-axis title it shares a line with, NOT in the series colours:
+	   the strong red/blue belong to the LINES, and this legend is about the bands
+	   between them. The swatch carries the colour; the text stays furniture. */
+	.legend-item {
+		display: inline-flex;
+		align-items: center;
+		gap: 5px;
+		white-space: nowrap;
+		color: var(--axis-muted, currentColor);
+	}
+
+	/* A filled block, matching the shaded band. Uses US_FILL / AU_FILL at full
+	   strength because that is what the chart actually paints — sampled the
+	   rendered pixels and they come back exactly #FFAFB3 / #92c5de (see the note
+	   on DifferenceY's fillOpacity). */
+	.swatch {
+		display: inline-block;
+		width: 14px;
+		height: 10px;
+		border-radius: 2px;
 	}
 
 	/* Mobile: near-full width for more chart room (the earlier reason for 100%). */
