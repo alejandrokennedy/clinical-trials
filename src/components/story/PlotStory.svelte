@@ -1,19 +1,4 @@
 <script lang="ts">
-	/**
-	 * PlotStory — starting point for a SveltePlot scrollytelling chart.
-	 *
-	 * This is a TEMPLATE, not a component to import and configure: copy it, then
-	 * replace the placeholder data and marks below. It carries the boilerplate
-	 * that every plot needs regardless of what it draws (Tier 1):
-	 *
-	 *   - page-chrome math, so the sticky pane sits between header and footer
-	 *   - container measurement feeding Plot's width/height
-	 *   - the render gate that prevents SveltePlot's negative-height crash
-	 *   - .plot-container styles from $styles/plot.css
-	 *
-	 * Hover/tooltip, animated domains and step-driven series are deliberately NOT
-	 * here — see the notes for where to copy those from when a story needs them.
-	 */
 	import "$styles/plot.css";
 	import { footerState } from "$utils/footerState.svelte";
 	import { MOBILE_BREAKPOINT, FOOTER_H, headerHeight } from "$utils/chrome";
@@ -22,20 +7,18 @@
 	import chapters from "$data/plotStorySteps.json";
 	import { Tween } from "svelte/motion";
 	import { cubicOut } from "svelte/easing";
-	// import RefreshCopy from "$components/helpers/RefreshCopy.svelte";
+	import RefreshCopy from "$components/helpers/RefreshCopy.svelte";
 
 	interface Props {
 		copy?: any;
 		darkMode?: boolean;
-		/** Does this story show the scroll-progress bar? Bigger features often
-		 *  drop it to reclaim vertical space. Adds PROG_BAR_H on desktop. */
 		progressBar?: boolean;
 	}
 
-	let { copy, darkMode = false, progressBar = false }: Props = $props();
-	// let { copy: initialCopy, darkMode = false, progressBar = false }: Props = $props();
-	// let copy = $state(initialCopy);
-	// const DOC_ID = "your-google-doc-id-here";
+	// let { copy, darkMode = false, progressBar = false }: Props = $props();
+	let { copy: initialCopy, darkMode = false, progressBar = false }: Props = $props();
+	let copy = $state(initialCopy);
+	const DOC_ID = "1WVnB5zR28cJgspAsq3rCqxWfd5ZKc0ifJtnBN0YVnyk";
 
 	// Below this measured height the plot body computes negative and SveltePlot
 	// throws on `<rect height="-…">`. See the render gate in the markup.
@@ -122,8 +105,8 @@
 
 	// Muted colour for axis ticks + labels (applied as `color`/currentColor).
 	const AXIS_MUTED = "#4b4b4b";
-	// const CURVE = "catmull-rom";
-	const CURVE = "linear";
+	const CURVE = "catmull-rom";
+	// const CURVE = "linear";
 
 	// ── Config toggles ───────────────────────────────────────────────────────────
 	// Show the ScrolloSteps text boxes (bg + shadow). Off while the steps are empty;
@@ -157,6 +140,20 @@
 	const DOT_TRIGGER = 1; // reveal fraction at which the dots start growing in
 	const DOT_ANIM_MS = 450; // duration of the dot pop-in (its own clock)
 
+	// ── Copy ────────────────────────────────────────────────────────────────────
+	// Prose for the two overlay notes comes from copy.json, which `pnpm gdoc`
+	// regenerates from the Google Doc (DOC_ID above; see google.config.js).
+	//
+	// Looked up by ArchieML `name`, NOT by array index — reordering the doc or
+	// inserting a block above them would otherwise silently swap the two notes.
+	// The text carries its own <span class="us"> / class="au"> markup, so it has
+	// to be rendered with {@html}; the styling consequence of that is noted on the
+	// .us/.au rules in the style block.
+	const storyCopy = (name: string): string =>
+		copy?.story?.find((d: { name: string }) => d.name === name)?.text ?? "";
+	let introText = $derived(storyCopy("us"));
+	let leadText = $derived(storyCopy("australia"));
+
 	// ── Scroll wiring ───────────────────────────────────────────────────────────
 	// ScrolloSteps reports the active step index and a 0→1 progress within it.
 	let step = $state<number | null | undefined>(undefined);
@@ -164,6 +161,54 @@
 
 	// chapters[0] = intro (chart empty), chapters[1] = scrub through time.
 	const CHART_STEP = 1;
+
+	// Height of the animation step, in px — the scroll distance that one full unit
+	// of `p` costs (Scrollo divides by exactly this). It's what lets the prose
+	// notes below move at true 1:1 scroll rate. Measured rather than computed from
+	// ANIM_STEP_PADDING so it stays right if that lever changes, and because `vh`
+	// on mobile is the *large* viewport, not window.innerHeight.
+	//
+	// Safe to observe: this element's height comes from the viewport alone, never
+	// from anything we derive out of stepPx — so unlike the chart box (see the
+	// debounce above) there's no ResizeObserver feedback loop to break.
+	let overlayEl = $state<HTMLDivElement | null>(null);
+	let stepPx = $state(0);
+
+	$effect(() => {
+		const el = overlayEl?.querySelector<HTMLElement>(
+			`.step:nth-child(${CHART_STEP + 1})`
+		);
+		if (!el) return;
+		const measure = () => (stepPx = el.offsetHeight);
+		measure();
+		const ro = new ResizeObserver(measure);
+		ro.observe(el);
+		return () => ro.disconnect();
+	});
+
+	// How far the intro note must travel to clear the top of the frame: its own
+	// offset from the container top plus its height, so the whole card is past the
+	// edge. Measured rather than a magic number — it tracks copy length and the
+	// mobile card's padding. `transform` doesn't affect offsetTop/offsetHeight, so
+	// reading them while the note is mid-slide is safe (and no feedback loop).
+	let introEl = $state<HTMLParagraphElement | null>(null);
+	let introExitPx = $state(0);
+	const EXIT_SLACK = 8; // a few px past the edge, so no sliver of card shows
+
+	$effect(() => {
+		const el = introEl;
+		if (!el) return;
+		// Tracked reads: offsetTop is a percentage of the frame, so it moves when
+		// the frame does. (ResizeObserver alone would miss a height-only change.)
+		void height;
+		void width;
+		const measure = () =>
+			(introExitPx = el.offsetTop + el.offsetHeight + EXIT_SLACK);
+		measure();
+		const ro = new ResizeObserver(measure);
+		ro.observe(el);
+		return () => ro.disconnect();
+	});
 
 	// Target reveal amount (0 = year 2000, 1 = year 2025) from scroll position.
 	let target = $derived.by(() => {
@@ -212,37 +257,93 @@
 	// The lines cross (US = Australia per capita) between 2016 and 2017; ~2016.5.
 	// Kept in chart coordinates so the callout + leader stay anchored on resize.
 	const CROSS = { year: 2016.5, value: 0.412 }; // the crossover point
-	const CROSS_LABEL = { year: 2019, value: 0.2 }; // callout text: lower-right of dot
+	// Callout text position, per breakpoint.
+	//   Desktop — lower-RIGHT of the dot, in the wedge under the crossing lines.
+	//   Mobile   — upper-LEFT instead: the mobile lead note rests as a bottom card
+	//     (see `.lead-note` in the @media block), which lands on top of a
+	//     lower-right callout. The 2000–2015 × 0.5–1.0 quadrant is empty on both
+	//     series (the U.S. peaks at ~0.47, Australia stays under 0.35 until 2016),
+	//     so the text AND its leader clear the data.
+	const CROSS_LABEL_DESKTOP = { year: 2019, value: 0.2 };
+	const CROSS_LABEL_MOBILE = { year: 2007.5, value: 0.56 };
+	let crossLabel = $derived(isMobile ? CROSS_LABEL_MOBILE : CROSS_LABEL_DESKTOP);
 	const CROSS_REVEAL = (CROSS.year - X0) / (X1 - X0); // ≈ 0.66
 	// Shared fade duration for ALL annotation text (intro, lead note, callout).
 	const CROSS_FADE_SPAN = 0.04;
 	// Leader line endpoints — symmetric gap from the text and the dot. LEADER_GAP
 	// (fraction of the text→dot span, applied to both ends) is the tuning knob.
+	// Derived, not constant, so the leader follows the label across the breakpoint.
 	const lerp = (a: number, b: number, u: number) => a + (b - a) * u;
 	const LEADER_GAP = 0.95;
-	const leaderA = {
-		year: lerp(CROSS_LABEL.year, CROSS.year, LEADER_GAP),
-		value: lerp(CROSS_LABEL.value, CROSS.value, LEADER_GAP)
-	}; // near the text
-	const leaderB = {
-		year: lerp(CROSS_LABEL.year, CROSS.year, 1 - LEADER_GAP),
-		value: lerp(CROSS_LABEL.value, CROSS.value, 1 - LEADER_GAP)
-	}; // near the dot
+	let leaderA = $derived({
+		year: lerp(crossLabel.year, CROSS.year, LEADER_GAP),
+		value: lerp(crossLabel.value, CROSS.value, LEADER_GAP)
+	}); // near the dot
+	let leaderB = $derived({
+		year: lerp(crossLabel.year, CROSS.year, 1 - LEADER_GAP),
+		value: lerp(crossLabel.value, CROSS.value, 1 - LEADER_GAP)
+	}); // near the text
 
 	// The callout fades in at the crossover over CROSS_FADE_SPAN.
 	let crossFade = $derived(clamp((p - CROSS_REVEAL) / CROSS_FADE_SPAN));
 
 	// Prose-note handoff at the crossover: a SCROLL transition (not a fade-in-place).
-	// The intro note scrolls up and out while the lead note scrolls up into its
-	// place, both driven by `p` so they stay pinned to the crossover. HANDOFF_SPAN
-	// (reveal-fraction window) and NOTE_SHIFT (px travelled) are the knobs.
-	const HANDOFF_SPAN = 0.08;
-	const NOTE_SHIFT = 48;
-	let handoff = $derived(clamp((p - CROSS_REVEAL) / HANDOFF_SPAN));
-	let introOpacity = $derived(1 - handoff);
-	let introShift = $derived(-handoff * NOTE_SHIFT); // up and out
-	let leadOpacity = $derived(handoff);
-	let leadShift = $derived((1 - handoff) * NOTE_SHIFT); // enters from below → 0
+	// The intro note scrolls up and out; the lead note scrolls up into place. Both
+	// driven by `p` so they stay pinned to the crossover.
+	//
+	// MOTION is locked to the scroll at 1:1 — a note travels one pixel per pixel
+	// the reader scrolls, exactly like a real paragraph (or a visible ScrolloStep,
+	// which is just normal-flow content under the sticky chart). Anything else
+	// reads as "fast": a fixed p-fraction window with a fixed px travel makes the
+	// rate an accident of viewport height. Scrollo's stepProgress is
+	// `(triggerLine - elementTop) / rect.height`, so ONE unit of `p` == the
+	// animation step's height in scroll px — measure that (`stepPx`) and a px
+	// travel converts straight into the p-span that scrolls it 1:1.
+	// ONE treatment at both breakpoints: the intro scrolls all the way out of the
+	// top of the frame, the lead rises LEAD_SHIFT into place, both at 1:1.
+	//
+	// Desktop used to do this in a 48px flick. That was the same *rate* — but over
+	// so little distance that the whole handoff was spent in 48px of scroll, while
+	// mobile's took ~235px. Distance is what sets the duration here, so matching
+	// mobile's distances is what matches its pace; stretching a 48px move over
+	// 235px of scroll would have put desktop back at ~0.2× and undone the 1:1 fix.
+	const LEAD_SHIFT = 220;
+	const NOTE_SHIFT_FALLBACK = 48; // used only until the intro note is measured
+	// A 1:1 move costs its distance in scroll, and only (1 − CROSS_REVEAL) of the
+	// step is left after the crossover. Cap any travel so it always completes by
+	// ARRIVE_BY instead of freezing part-way on a short viewport.
+	// 0.98, not 0.95: the intro's full exit is ~235px on a 780px-tall phone and a
+	// 0.95 cap allowed only 226, leaving a few px of card to fade at the frame edge
+	// instead of scrolling cleanly out. The reveal still finishes after both notes.
+	const ARRIVE_BY = 0.98;
+	const capTravel = (px: number) =>
+		stepPx > 0 ? Math.min(px, (ARRIVE_BY - CROSS_REVEAL) * stepPx) : px;
+	// `introExitPx` is measured (below) as the distance that carries the whole note
+	// past the top of the frame, where .layout-container's overflow:hidden removes
+	// it — the same way a real paragraph leaves the screen.
+	let introTravel = $derived(
+		capTravel(introExitPx > 0 ? introExitPx : NOTE_SHIFT_FALLBACK)
+	);
+	let leadTravel = $derived(capTravel(LEAD_SHIFT));
+	// px → p-span. Before the step is measured, fall back to a span that keeps the
+	// old behaviour rather than dividing by zero.
+	const SPAN_FALLBACK = 0.08;
+	const toSpan = (px: number) => (stepPx > 0 ? px / stepPx : SPAN_FALLBACK);
+	let introTravelled = $derived(clamp((p - CROSS_REVEAL) / toSpan(introTravel)));
+	let leadTravelled = $derived(clamp((p - CROSS_REVEAL) / toSpan(leadTravel)));
+	// OPACITY is deliberately NOT tied to the travel: a paragraph scrolling through
+	// frame doesn't slowly materialise (or dissolve) over its whole journey. The
+	// intro stays fully opaque and simply scrolls off the top — clipping does the
+	// removing. Its trailing fade over the last INTRO_EXIT_FADE of the travel is a
+	// safety net for the capped case, and normally lands once the note is already
+	// past the frame edge. The lead just fades up over the short shared span.
+	const INTRO_EXIT_FADE = 0.1;
+	let introOpacity = $derived(
+		1 - clamp((introTravelled - (1 - INTRO_EXIT_FADE)) / INTRO_EXIT_FADE)
+	);
+	let leadOpacity = $derived(clamp((p - CROSS_REVEAL) / CROSS_FADE_SPAN));
+	let introShift = $derived(-introTravelled * introTravel); // up and out
+	let leadShift = $derived((1 - leadTravelled) * leadTravel);
 
 	// Reveal the series left→right: keep points up to the moving cutoff year and
 	// add one interpolated point exactly at the cutoff so the line/fill grow
@@ -295,7 +396,16 @@
 	);
 </script>
 
-<div class="scrollo-story" class:scrollo-dark={darkMode}>
+<!-- The series colours are published as custom properties here so the prose
+     copy (.us / .au spans in the notes and the step text) can tint country names
+     to match their lines WITHOUT re-typing the hex values and letting them drift
+     from US_COLOR / AU_COLOR. -->
+<div
+	class="scrollo-story"
+	class:scrollo-dark={darkMode}
+	style:--us-color={US_COLOR}
+	style:--au-color={AU_COLOR}
+>
 	<div
 		id="background"
 		bind:clientHeight={height}
@@ -423,7 +533,7 @@
 								data={[head]}
 								x="year"
 								y="usPer100k"
-								text={isMobile ? "United\nStates" : "U.S. 🇺🇸"}
+								text="U.S. 🇺🇸"
 								fill={{ value: US_COLOR, scale: null }}
 								fontWeight={600}
 								textAnchor="start"
@@ -435,7 +545,7 @@
 								data={[head]}
 								x="year"
 								y="auPer100k"
-								text="Australia 🇦🇺"
+								text={isMobile ? "Aus. 🇦🇺" : "Australia 🇦🇺"}
 								fill={{ value: AU_COLOR, scale: null }}
 								fontWeight={600}
 								textAnchor="start"
@@ -464,16 +574,19 @@
 								fill={{ value: AXIS_MUTED, scale: null }}
 								opacity={crossFade}
 							/>
+							<!-- Desktop: text hangs BELOW its anchor (leader leaves upward-left).
+							     Mobile: the label sits upper-left, so the text must sit ABOVE its
+							     anchor — otherwise the leader would run down through the text. -->
 							<Text
-								data={[CROSS_LABEL]}
+								data={[crossLabel]}
 								x="year"
 								y="value"
 								text={"Australia overtakes\nthe U.S. per capita"}
 								fill={{ value: AU_COLOR, scale: null }}
 								fontWeight={600}
 								textAnchor="middle"
-								lineAnchor="top"
-								dy={6}
+								lineAnchor={isMobile ? "bottom" : "top"}
+								dy={isMobile ? -6 : 6}
 								opacity={crossFade}
 							/>
 						{/if}
@@ -483,14 +596,15 @@
 
 			<!-- Intro annotation: C&EN-style prose centered in the top quarter of the
 			     chart. Plain HTML (not a Text mark) so it gets real serif prose,
-			     wrapping and line-height. Scrolls up and out at the crossover. -->
+			     wrapping and line-height. Scrolls up and out at the crossover.
+			     {@html} because the copy carries its own .us/.au span markup. -->
 			<p
+				bind:this={introEl}
 				class="intro-note"
 				style:opacity={introOpacity}
 				style:--note-shift={`${introShift}px`}
 			>
-				For the first 16 years of this millennium, the U.S. completed (?) more phase 1
-				trials per 100,000 residents than Australia.
+				{@html introText}
 			</p>
 
 			<!-- "Since 2016" lead note (the 2nd step's copy). Same prose style as the
@@ -500,8 +614,7 @@
 				style:opacity={leadOpacity}
 				style:--note-shift={`${leadShift}px`}
 			>
-				However, since 2016 Australia has taken the lead in phase 1 trials per
-				100,000 residents, driven by [x] and [y] factors.
+				{@html leadText}
 			</p>
 		</div>
 	</div>
@@ -510,6 +623,7 @@
 	     first step up over the chart so they share the viewport; the chart stays
 	     put (sticky) while these steps scroll past and drive the animation. -->
 	<div
+		bind:this={overlayEl}
 		class="foreground-overlay"
 		class:hide-step-boxes={!SHOW_STEP_BOXES}
 		style:margin-top={`calc(-1 * (100vh - ${headerH}px - ${footerH}px))`}
@@ -518,7 +632,7 @@
 		<ScrolloSteps bind:step bind:stepProgress {chapters} top="75vh" smoothIntro />
 	</div>
 	<!-- uncomment below to pull directly from gdoc on page reload -->
-	<!-- <RefreshCopy docId={DOC_ID} bind:data={copy} /> -->
+	<RefreshCopy docId={DOC_ID} bind:data={copy} />
 </div>
 
 <style>
@@ -620,18 +734,71 @@
 		pointer-events: none;
 	}
 
-	/* Mobile: an active note still rests over the (full) chart, so give it a legible
-	   translucent card (mirrors ScrolloSteps' mobile card) so prose reads over the
-	   data as it scrolls through. Desktop stays transparent (empty upper-centre). */
+	/* Country names tinted to their series, matching both the chart's line-end
+	   labels and the .us/.au convention already used in the step copy (same colour
+	   + weight 600, so the two text systems agree).
+	   MUST be :global. The note prose is injected with {@html} from copy.json, so
+	   those spans are created at runtime and never receive Svelte's compile-time
+	   scoping class — a plain `.us` selector silently matches nothing (and gets
+	   pruned as unused). Same reason the step-copy rules below are :global. The
+	   .intro-note / .lead-note prefixes still scope the effect to these two notes
+	   rather than leaking the classes page-wide. */
+	.intro-note :global(.us),
+	.lead-note :global(.us) {
+		color: var(--us-color);
+		font-weight: 600;
+	}
+
+	.intro-note :global(.au),
+	.lead-note :global(.au) {
+		color: var(--au-color);
+		font-weight: 600;
+	}
+
+	/* Mobile: an active note still rests over the chart, so give it a legible card —
+	   styled to match ScrolloSteps' own mobile active-step paragraph
+	   (`.step.activeStep p`), so the overlay prose and the step boxes read as one
+	   system if the steps are ever switched back on.
+	   Copied from there: the translucent-white card, 5px radius, soft drop shadow,
+	   and the 8-direction white text-outline.
+	   NOT copied: `backdrop-filter: blur(2.5px)`. Blurring the full-frame SVG
+	   backdrop every resize frame hangs the page (see CLAUDE.md / context.md) —
+	   that hazard is exactly why these notes stopped using it. The text-outline
+	   below does the legibility work the blur was there for, which is why the
+	   background can drop from 0.9 to ScrolloSteps' lighter 0.75. */
 	@media (max-width: 768px) {
 		.intro-note,
 		.lead-note {
 			width: 88%;
-			padding: 0.6rem 0.9rem;
-			border-radius: 6px;
-			background: rgba(255, 255, 255, 0.82);
-			backdrop-filter: blur(2px);
-			-webkit-backdrop-filter: blur(2px);
+			/* ScrolloSteps' MOBILE padding (`--scrollo-text-padding-mobile`), not its
+			   desktop `1rem` — a tight 0.1rem top/bottom so the card hugs the prose
+			   and covers as little of the chart as possible. */
+			padding: 0.1rem 1rem;
+			border-radius: 5px;
+			background: rgba(255, 255, 255, 0.75);
+			box-shadow: 1px 1px 10px rgba(0, 0, 0, 0.2);
+
+			/* Text outline using text-shadow (lifted from ScrolloSteps). */
+			--stroke-width: 2px;
+			--stroke-width-n: calc(var(--stroke-width) * -1);
+			text-shadow:
+				var(--stroke-width-n) var(--stroke-width-n) 0 white,
+				0 var(--stroke-width-n) 0 white,
+				var(--stroke-width) var(--stroke-width-n) 0 white,
+				var(--stroke-width) 0 0 white,
+				var(--stroke-width) var(--stroke-width) 0 white,
+				0 var(--stroke-width) 0 white,
+				var(--stroke-width-n) var(--stroke-width) 0 white,
+				var(--stroke-width-n) 0 0 white;
+		}
+
+		/* The lead note (Australia's dominance) rides up from the bottom of the frame
+		   (LEAD_SHIFT) and rests as a bottom card, so the whole chart body — the blue
+		   peak it describes AND the crossover callout — stays visible above it.
+		   Covers only the x-axis strip, which the reader has already scrolled by. */
+		.lead-note {
+			top: auto;
+			bottom: 4%;
 		}
 	}
 
@@ -659,12 +826,12 @@
 
 	/* Colour the series names in the step copy to match the lines. */
 	.foreground-overlay :global(.us) {
-		color: #d73027;
+		color: var(--us-color);
 		font-weight: 600;
 	}
 
 	.foreground-overlay :global(.au) {
-		color: #4575b4;
+		color: var(--au-color);
 		font-weight: 600;
 	}
 

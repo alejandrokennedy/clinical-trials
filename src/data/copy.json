@@ -1,23 +1,12 @@
 {
-	"meta": { "title": "Title TK", "description": "Description tk." },
-	"body": [
-		{
-			"section": "intro",
-			"content": [
-				{ "type": "h4", "value": "An h4 element with no attributes" },
-				{
-					"type": "text",
-					"value": "Some random text here, followed by an img tag."
-				},
-				{
-					"type": "img",
-					"value": { "src": "../assets/demo/test.jpg", "alt": "A cat" }
-				},
-				{
-					"type": "Test",
-					"value": { "label": "I’m a custom component!", "value": "50" }
-				}
-			]
-		}
-	]
+  "story": [
+    {
+      "name": "us",
+      "text": "For the first 16 years of this millennium, the <span class=\"us\">U.S.</span> completed (?) more phase 1 trials per 100,000 residents than <span class=\"au\">Australia</span>"
+    },
+    {
+      "name": "australia",
+      "text": "However, since 2016 <span class=\"au\">Australia</span> has taken the lead in phase 1 trials per 100,000 residents, driven by [x] and [y] factors."
+    }
+  ]
 }
