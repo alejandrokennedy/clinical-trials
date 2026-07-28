@@ -143,7 +143,13 @@
 		const elementTop = window.scrollY + rect.top;
 		const elementBottom = elementTop + rect.height;
 
-		// Progress: 0 when trigger hits top, 1 when trigger hits bottom
+		// Progress: 0 when trigger hits top, 1 when trigger hits bottom.
+		//
+		// NB: this formula has an offsite consumer. PlotStory INVERTS it — solving
+		// for the scrollY at a given progress — to anchor overlay notes that must
+		// move at 1:1 with the scroll. Changing what `rect.height` or the trigger
+		// line means here silently desynchronises that; it surfaces as the notes
+		// scrolling at slightly the wrong rate, not as an error.
 		const progress = (triggerLine - elementTop) / rect.height;
 
 		// Clamp between 0 and 1

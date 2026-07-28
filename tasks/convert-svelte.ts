@@ -30,8 +30,8 @@ import { dirname, join, resolve, basename } from "node:path";
 
 const CSS_PREFIX = `.div-w-100 { overflow: visible; }
 
-/* A scrollytelling module's HEIGHT IS ITS SCROLL RUNWAY — the story is ~2.6
-   viewports tall and the scroll animation is scrubbed against that length. A
+/* A scrollytelling module's HEIGHT IS ITS SCROLL RUNWAY — the story runs to
+   several viewports and the animation is scrubbed against that length. A
    page-level height on the wrapper therefore doesn't shrink the module: because
    .div-w-100 is overflow:visible, the story simply overflows and every AEM block
    after it (recirculation, pre-footer, footer) gets laid out on top of the still-

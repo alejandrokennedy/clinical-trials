@@ -2,7 +2,8 @@
 	import "$styles/plot.css";
 	import { footerState } from "$utils/footerState.svelte";
 	import { MOBILE_BREAKPOINT, FOOTER_H, headerHeight } from "$utils/chrome";
-	import { Plot, DifferenceY, Line, Text, Dot } from "svelteplot";
+	import { Plot, DifferenceY, Line, Text, Dot, HTMLTooltip } from "svelteplot";
+	import AnchoredTooltip from "$components/helpers/tooltip/AnchoredTooltip.svelte";
 	import ScrolloSteps from "$components/helpers/ScrolloSteps.svelte";
 	import chapters from "$data/plotStorySteps.json";
 	import { Tween } from "svelte/motion";
@@ -15,8 +16,11 @@
 		progressBar?: boolean;
 	}
 
-	// let { copy, darkMode = false, progressBar = false }: Props = $props();
-	let { copy: initialCopy, darkMode = false, progressBar = false }: Props = $props();
+	let {
+		copy: initialCopy,
+		darkMode = false,
+		progressBar = false
+	}: Props = $props();
 	let copy = $state(initialCopy);
 	const DOC_ID = "1WVnB5zR28cJgspAsq3rCqxWfd5ZKc0ifJtnBN0YVnyk";
 
@@ -80,6 +84,8 @@
 	const PER_LABEL = "million";
 
 	// [startYear, usCount, auCount]
+	// The grid layout is the point here — one row per line buries the shape.
+	// prettier-ignore
 	const counts: [number, number, number][] = [
 		[2000, 283, 6], [2001, 312, 3], [2002, 398, 6], [2003, 500, 5],
 		[2004, 665, 8], [2005, 785, 32], [2006, 973, 31], [2007, 1106, 40],
@@ -92,11 +98,19 @@
 
 	// Field names are deliberately unit-NEUTRAL (`usRate`, not `usPer100k`) so a
 	// change of denominator doesn't ripple through every mark in the markup.
+	// usCount/auCount ride along for the tooltip, which reports BOTH framings. They
+	// are not plotted, and clip() drops them — that's fine, the tooltip reads this
+	// array (all years, static), never the clipped/morphed one.
 	const data = counts.map(([year, us, au]) => ({
 		year,
 		usRate: us / (POP.us / PER),
-		auRate: au / (POP.au / PER)
+		auRate: au / (POP.au / PER),
+		usCount: us,
+		auCount: au
 	}));
+
+	// What actually gets drawn: year + the two plotted values, no raw counts.
+	type PlotRow = { year: number; usRate: number; auRate: number };
 
 	// Fixed scales so the frame stays put while the lines grow into it.
 	const X0 = data[0].year;
@@ -118,10 +132,10 @@
 	// Headroom check: the tallest count is the U.S. 1578 in 2021, which lands at
 	// 90% of a 1750 axis. That's tighter than the old 2000 top (79%) but still
 	// clears the frame — catmull-rom overshoot at that peak is ~0.1 axis units.
-	// If COUNT_PEAK ever exceeds Y_MAX_COUNT the line would run out of the top.
+	// The tallest count is 1578; if it ever exceeds Y_MAX_COUNT the line would run
+	// out of the top of the frame.
 	const Y_MAX_COUNT = 1750;
 	const COUNT_TICK_STEP = 250;
-	const COUNT_PEAK = Math.max(...counts.map(([, us, au]) => Math.max(us, au)));
 
 	// Carried in AXIS units so they drop straight into the fixed [0, Y_MAX] frame.
 	// toFixed(2) not (1): at quarter steps 1250 would round to "1.3k". The unary +
@@ -144,13 +158,11 @@
 	// are applied to the area paths via CSS custom properties (see the style block).
 	// Light red to echo the US line; light blue for Australia. Tweak freely.
 	const US_FILL = "#FFAFB3"; // light red / salmon
-	// const US_FILL = "#f4a582"; // light red / salmon
 	const AU_FILL = "#92c5de"; // light blue
 
 	// Muted colour for axis ticks + labels (applied as `color`/currentColor).
 	const AXIS_MUTED = "#4b4b4b";
 	const CURVE = "catmull-rom";
-	// const CURVE = "linear";
 
 	// ── Config toggles ───────────────────────────────────────────────────────────
 	// Show the ScrolloSteps text boxes (bg + shadow). Off while the steps are empty;
@@ -158,6 +170,9 @@
 	const SHOW_STEP_BOXES = false;
 	// Scroll length of the step that drives the time-series animation (the 2nd
 	// step). Longer → the reveal is spread over more scrolling.
+	// Scroll length of the intro step. Restates ScrolloSteps' own default, but
+	// stated here so all three step lengths sit together as pacing controls.
+	const INTRO_STEP_PADDING = "60vh";
 	const ANIM_STEP_PADDING = "100vh";
 	// Scroll length of the 3rd step, which morphs the chart from per-capita rates
 	// to absolute counts.
@@ -167,7 +182,9 @@
 	// still scrolling out of the top, so note 3 holds off until it has cleared.
 	const NOTE3_START_DESKTOP = 0.1;
 	const NOTE3_START_MOBILE = 0.45;
-	let note3Start = $derived(isMobile ? NOTE3_START_MOBILE : NOTE3_START_DESKTOP);
+	let note3Start = $derived(
+		isMobile ? NOTE3_START_MOBILE : NOTE3_START_DESKTOP
+	);
 
 	// The morph's window INSIDE that step, as 0→1 fractions of its progress.
 	// START is keyed to note 3's arrival rather than being a fixed number, so the
@@ -286,7 +303,12 @@
 	let step = $state<number | null | undefined>(undefined);
 	let stepProgress = $state<number | null | undefined>(undefined);
 
-	// chapters[0] = intro (chart empty), chapters[1] = scrub through time.
+	// chapters[0] = intro (chart empty), chapters[1] = scrub through time,
+	// chapters[2] = morph to absolute counts.
+	// NB: these indices are ALSO hardcoded as :nth-child literals in the style
+	// block (a step's scroll length is CSS). Reorder or insert a step and both
+	// must change together — nothing errors if they diverge, the wrong step just
+	// gets the wrong scroll length, which only shows up as "the pacing feels off".
 	const CHART_STEP = 1;
 
 	// Height of the animation step, in px — the scroll distance that one full unit
@@ -313,23 +335,48 @@
 	let scrollY = $state(0);
 	let winH = $state(800);
 
-	$effect(() => {
+	// Measure a scroll step's height and absolute document top. Both notes' scroll
+	// anchoring needs the pair, and the two call sites below were previously an
+	// exact clone of each other.
+	//
+	// Split deliberately into observe-once + re-measure-on-frame-change. Folding
+	// them together meant `winH` was a dependency of the effect that OWNS the
+	// observer, so every mobile URL-bar collapse tore down and rebuilt two
+	// ResizeObservers and forced a synchronous layout — mid-scroll, which is the
+	// one path in this file where that shows up as jank.
+	function observeStep(index: number, apply: (h: number, top: number) => void) {
 		const el = overlayEl?.querySelector<HTMLElement>(
-			`.step:nth-child(${CHART_STEP + 1})`
+			`.step:nth-child(${index + 1})`
 		);
 		if (!el) return;
-		// Re-measure when the frame changes; the step's document top can shift if
-		// anything above it reflows.
-		void winH;
-		void width;
-		const measure = () => {
-			stepPx = el.offsetHeight;
-			stepTopPx = window.scrollY + el.getBoundingClientRect().top;
-		};
+		const measure = () =>
+			apply(el.offsetHeight, window.scrollY + el.getBoundingClientRect().top);
 		measure();
 		const ro = new ResizeObserver(measure);
 		ro.observe(el);
 		return () => ro.disconnect();
+	}
+
+	function measureStep(index: number, apply: (h: number, top: number) => void) {
+		const el = overlayEl?.querySelector<HTMLElement>(
+			`.step:nth-child(${index + 1})`
+		);
+		if (el)
+			apply(el.offsetHeight, window.scrollY + el.getBoundingClientRect().top);
+	}
+
+	const setChartStep = (h: number, top: number) => {
+		stepPx = h;
+		stepTopPx = top;
+	};
+
+	$effect(() => observeStep(CHART_STEP, setChartStep));
+	// A step's document top also shifts if anything above it reflows, so re-measure
+	// on frame changes — without disturbing the observer above.
+	$effect(() => {
+		void winH;
+		void width;
+		measureStep(CHART_STEP, setChartStep);
 	});
 
 	let triggerPx = $derived((SCROLLO_TOP_VH / 100) * winH);
@@ -368,14 +415,12 @@
 	// A tween smooths scroll jitter into fluid line growth, but it also *trails* the
 	// scroll by roughly this duration — the "slight lag" in the reveal. Lower it for
 	// snappier tracking, raise it for more smoothing (0 = follow the scroll exactly).
-	// const ANIM_TWEEN_MS = 150;
 	const ANIM_TWEEN_MS = 0;
-	const reveal = new Tween(0, { duration: ANIM_TWEEN_MS, easing: cubicOut });
-	$effect(() => {
-		reveal.target = target;
+	const reveal = Tween.of(() => target, {
+		duration: ANIM_TWEEN_MS,
+		easing: cubicOut
 	});
 	let p = $derived(reveal.current);
-
 
 	// ── Step 3 progress (`q`) ───────────────────────────────────────────────────
 	// A PARALLEL derivation, not an extension of `target`. `p` has to stay pinned
@@ -391,9 +436,9 @@
 		if (step > MORPH_STEP) return 1;
 		return stepProgress ?? 0;
 	});
-	const morph = new Tween(0, { duration: MORPH_TWEEN_MS, easing: cubicOut });
-	$effect(() => {
-		morph.target = morphTarget;
+	const morph = Tween.of(() => morphTarget, {
+		duration: MORPH_TWEEN_MS,
+		easing: cubicOut
 	});
 	// cubicInOut, not linear: the whole "who leads" band reversal happens in the
 	// first half of q (2017 flips at q≈0.08, 2025 at q≈0.46), so easing the start
@@ -406,8 +451,10 @@
 	// `FADE_START` — letting the lines grow a little first — then fades in, fully
 	// on by `FADE_END`. Both are 0→1 fractions of the reveal.
 	const FADE_START = 0.15;
-	const FADE_END = 0.30;
-	let decorationFade = $derived(clamp((p - FADE_START) / (FADE_END - FADE_START)));
+	const FADE_END = 0.3;
+	let decorationFade = $derived(
+		clamp((p - FADE_START) / (FADE_END - FADE_START))
+	);
 
 	// End-of-animation ramp: drives the top (1.0) gridline/number, which fades in
 	// over the last TAIL_SPAN of the reveal.
@@ -420,9 +467,9 @@
 	// `scale` drifts from the top-left because SveltePlot's translate lives in the
 	// transform attribute, which composes outside an individual `scale`.) Only the
 	// two dot marks re-render per frame, so it stays cheap.
-	const dotGrow = new Tween(0, { duration: DOT_ANIM_MS, easing: cubicOut });
-	$effect(() => {
-		dotGrow.target = SHOW_DOTS && p >= DOT_TRIGGER ? 1 : 0;
+	const dotGrow = Tween.of(() => (SHOW_DOTS && p >= DOT_TRIGGER ? 1 : 0), {
+		duration: DOT_ANIM_MS,
+		easing: cubicOut
 	});
 
 	// ── 2016 crossover annotation ───────────────────────────────────────────────
@@ -455,7 +502,9 @@
 	//     until 2016), so the text AND its leader clear the data.
 	const CROSS_LABEL_DESKTOP = { year: 2019, value: 0.2 * Y_MAX };
 	const CROSS_LABEL_MOBILE = { year: 2007.5, value: 0.56 * Y_MAX };
-	let crossLabel = $derived(isMobile ? CROSS_LABEL_MOBILE : CROSS_LABEL_DESKTOP);
+	let crossLabel = $derived(
+		isMobile ? CROSS_LABEL_MOBILE : CROSS_LABEL_DESKTOP
+	);
 	const CROSS_REVEAL = (CROSS.year - X0) / (X1 - X0); // ≈ 0.66
 	// Shared fade duration for ALL annotation text (intro, lead note, callout).
 	const CROSS_FADE_SPAN = 0.04;
@@ -505,8 +554,20 @@
 	// 0.95 cap allowed only 226, leaving a few px of card to fade at the frame edge
 	// instead of scrolling cleanly out. The reveal still finishes after both notes.
 	const ARRIVE_BY = 0.98;
-	const capTravel = (px: number) =>
-		stepPx > 0 ? Math.min(px, (ARRIVE_BY - CROSS_REVEAL) * stepPx) : px;
+	// The same two rules govern every note, so they're written once and applied per
+	// step. `capOf` was previously spelled three different ways (here, note3Travel,
+	// leadExitTravel) and `spanOf` twice, with the `> 0` fallback repeated at all
+	// five sites — a change to ARRIVE_BY's meaning had to be made in three shapes.
+	const capOf = (px: number, distance: number, start: number) =>
+		px > 0 ? Math.min(distance, (ARRIVE_BY - start) * px) : distance;
+	const spanOf = (px: number, distance: number) =>
+		px > 0 ? distance / px : SPAN_FALLBACK;
+	// Scroll position at a given fraction through a step — the inverse of Scrollo's
+	// stepProgress. See the note on handoffScrollY below.
+	const scrollYAt = (top: number, px: number, frac: number) =>
+		top + frac * px - triggerPx;
+
+	const capTravel = (px: number) => capOf(stepPx, px, CROSS_REVEAL);
 	// `introExitPx` is measured (below) as the distance that carries the whole note
 	// past the top of the frame, where .layout-container's overflow:hidden removes
 	// it — the same way a real paragraph leaves the screen.
@@ -517,7 +578,7 @@
 	// px → p-span. Before the step is measured, fall back to a span that keeps the
 	// old behaviour rather than dividing by zero.
 	const SPAN_FALLBACK = 0.08;
-	const toSpan = (px: number) => (stepPx > 0 ? px / stepPx : SPAN_FALLBACK);
+	const toSpan = (px: number) => spanOf(stepPx, px);
 	// The intro starts leaving BEFORE the crossover, not at it. The notes form a
 	// conveyor — each rises from below, holds, then rises out of the top — and if
 	// note 1 only began leaving at the takeover, note 2 would be arriving into an
@@ -526,7 +587,9 @@
 	// and each note gets roughly equal screen time.
 	const INTRO_EXIT_LEAD = 0.09; // in units of `p`, ahead of CROSS_REVEAL
 	let introExitStart = $derived(CROSS_REVEAL - INTRO_EXIT_LEAD);
-	let introTravelled = $derived(clamp((p - introExitStart) / toSpan(introTravel)));
+	let introTravelled = $derived(
+		clamp((p - introExitStart) / toSpan(introTravel))
+	);
 	let leadTravelled = $derived(clamp((p - CROSS_REVEAL) / toSpan(leadTravel)));
 	// OPACITY is deliberately NOT tied to the travel: a paragraph scrolling through
 	// frame doesn't slowly materialise (or dissolve) over its whole journey. The
@@ -556,7 +619,7 @@
 	// stepProgress formula — progress = (scrollY + trigger − stepTop) / stepPx —
 	// for progress == CROSS_REVEAL. Still 1:1, still pinned to the crossover, but
 	// it keeps going for as long as the reader keeps scrolling.
-	let handoffScrollY = $derived(stepTopPx + CROSS_REVEAL * stepPx - triggerPx);
+	let handoffScrollY = $derived(scrollYAt(stepTopPx, stepPx, CROSS_REVEAL));
 	let scrolledSinceHandoff = $derived(Math.max(0, scrollY - handoffScrollY));
 
 	// ── Step 3's note ("raw numbers") ───────────────────────────────────────────
@@ -564,40 +627,32 @@
 	// "keep scrolling" would only strand it mid-frame at max scroll. That's why it
 	// needs no handoffScrollY analogue — the single biggest simplification here.
 	//
-	// Its own step measurement, deliberately a separate effect rather than a
-	// parameterised version of the stepPx one: that effect is load-bearing for the
-	// reveal's 1:1 math and handoffScrollY, and isn't worth the regression risk.
+	// Measured with the shared observeStep/measureStep helpers above; the intro
+	// note keeps its own effect because it observes a bound element and measures a
+	// different quantity.
 	// NOTE3_START_* / note3Start live up in the config block — the morph window is
 	// keyed to them, so they have to be declared before it reads them.
+	// Same distance as note 2's rise.
 	const NOTE3_SHIFT = LEAD_SHIFT;
 	let morphStepPx = $state(0);
 	// Step 3's absolute document top — needed only for the mobile keep-scrolling
 	// mode below, which is driven by raw scrollY rather than by step progress.
 	let morphStepTopPx = $state(0);
 
+	const setMorphStep = (h: number, top: number) => {
+		morphStepPx = h;
+		morphStepTopPx = top;
+	};
+
+	$effect(() => observeStep(MORPH_STEP, setMorphStep));
 	$effect(() => {
-		const el = overlayEl?.querySelector<HTMLElement>(
-			`.step:nth-child(${MORPH_STEP + 1})`
-		);
-		if (!el) return;
 		void winH;
 		void width;
-		const measure = () => {
-			morphStepPx = el.offsetHeight;
-			morphStepTopPx = window.scrollY + el.getBoundingClientRect().top;
-		};
-		measure();
-		const ro = new ResizeObserver(measure);
-		ro.observe(el);
-		return () => ro.disconnect();
+		measureStep(MORPH_STEP, setMorphStep);
 	});
 
-	const morphSpan = (px: number) => (morphStepPx > 0 ? px / morphStepPx : SPAN_FALLBACK);
-	let note3Travel = $derived(
-		morphStepPx > 0
-			? Math.min(NOTE3_SHIFT, (ARRIVE_BY - note3Start) * morphStepPx)
-			: NOTE3_SHIFT
-	);
+	const morphSpan = (px: number) => spanOf(morphStepPx, px);
+	let note3Travel = $derived(capOf(morphStepPx, NOTE3_SHIFT, note3Start));
 	let note3Travelled = $derived(
 		clamp((morphTarget - note3Start) / morphSpan(note3Travel))
 	);
@@ -607,7 +662,7 @@
 	// the end of step 3, so a progress-driven version would freeze the note mid
 	// frame. Desktop still parks (it rests at top: 12%, with nothing following it).
 	let note3HandoffScrollY = $derived(
-		morphStepTopPx + note3Start * morphStepPx - triggerPx
+		scrollYAt(morphStepTopPx, morphStepPx, note3Start)
 	);
 	let scrolledSinceNote3 = $derived(Math.max(0, scrollY - note3HandoffScrollY));
 	let note3Shift = $derived(
@@ -615,7 +670,9 @@
 			? note3Travel - scrolledSinceNote3 // rises in, then keeps going (negative)
 			: (1 - note3Travelled) * note3Travel // rises in, then parks at 0
 	);
-	let note3Opacity = $derived(clamp((morphTarget - note3Start) / CROSS_FADE_SPAN));
+	let note3Opacity = $derived(
+		clamp((morphTarget - note3Start) / CROSS_FADE_SPAN)
+	);
 
 	// Desktop lead note has to LEAVE now — it parks forever, and would otherwise
 	// sit over the absolute chart still asserting the per-capita conclusion.
@@ -624,12 +681,7 @@
 	// same width and line-height, so they differ by at most a line, and the
 	// trailing INTRO_EXIT_FADE absorbs any under-travel.
 	let leadExitTravel = $derived(
-		morphStepPx > 0
-			? Math.min(
-					introExitPx > 0 ? introExitPx : NOTE_SHIFT_FALLBACK,
-					ARRIVE_BY * morphStepPx
-				)
-			: NOTE_SHIFT_FALLBACK
+		capOf(morphStepPx, introExitPx > 0 ? introExitPx : NOTE_SHIFT_FALLBACK, 0)
 	);
 	let leadExited = $derived(clamp(morphTarget / morphSpan(leadExitTravel)));
 
@@ -654,9 +706,13 @@
 	// Reveal the series left→right: keep points up to the moving cutoff year and
 	// add one interpolated point exactly at the cutoff so the line/fill grow
 	// smoothly between data years rather than snapping point to point.
-	function clip(rows: typeof data, frac: number) {
+	// Returns PLOTTED rows only: the interpolated cutoff point has no underlying
+	// counts, so usCount/auCount are dropped here by design (the tooltip reads
+	// `data`, never this). The explicit type is what makes that intentional
+	// rather than a hole.
+	function clip(rows: typeof data, frac: number): PlotRow[] {
 		const cx = X0 + frac * (X1 - X0);
-		const out: typeof data = [];
+		const out: PlotRow[] = [];
 		for (const d of rows) {
 			if (d.year <= cx) out.push(d);
 			else break;
@@ -676,7 +732,6 @@
 	}
 
 	let visible = $derived(clip(data, p));
-	let head = $derived(visible.length ? visible[visible.length - 1] : null);
 	// Need ≥2 *distinct* x values before drawing lines/areas — a single collapsed
 	// x (p≈0) gives SveltePlot a zero-width domain and NaN geometry.
 	let hasSpan = $derived(
@@ -692,8 +747,8 @@
 	// The <Plot> y-domain stays [0, Y_MAX] throughout. SveltePlot short-circuits
 	// data extent when given an explicit domain, so the frame, margins and
 	// gridline POSITIONS are fixed by construction — only the values move.
-	const US_GAIN = (POP.us / PER) * (Y_MAX / Y_MAX_COUNT); // ≈ 1.6745
-	const AU_GAIN = (POP.au / PER) * (Y_MAX / Y_MAX_COUNT); // ≈ 0.1332
+	const US_GAIN = (POP.us / PER) * (Y_MAX / Y_MAX_COUNT); // ≈ 1.914 (grows)
+	const AU_GAIN = (POP.au / PER) * (Y_MAX / Y_MAX_COUNT); // ≈ 0.152 (shrinks)
 	let usK = $derived(lerp(1, US_GAIN, q));
 	let auK = $derived(lerp(1, AU_GAIN, q));
 	// Field names stay usRate/auRate so not a single mark binding changes — only
@@ -708,7 +763,9 @@
 					auRate: d.auRate * auK
 				}))
 	);
-	let plotHead = $derived(plotRows.length ? plotRows[plotRows.length - 1] : null);
+	let plotHead = $derived(
+		plotRows.length ? plotRows[plotRows.length - 1] : null
+	);
 
 	// Largest value drawn so far → which gridlines are "needed" yet. Non-decreasing
 	// because `visible` always spans from 2000 to the moving cutoff.
@@ -718,10 +775,12 @@
 	// `p >= 1` short-circuit makes that explicit rather than incidental: once the
 	// reveal is done every gridline is needed and stays needed.
 	let maxVisible = $derived(
-		p >= 1 ? Y_MAX : visible.reduce((m, d) => Math.max(m, d.usRate, d.auRate), 0)
+		p >= 1
+			? Y_MAX
+			: visible.reduce((m, d) => Math.max(m, d.usRate, d.auRate), 0)
 	);
 	const tickReveal = (t: number) =>
-		Math.min(1, Math.max(0, (maxVisible - t + TICK_LEAD) / TICK_FADE_SPAN));
+		clamp((maxVisible - t + TICK_LEAD) / TICK_FADE_SPAN);
 	// Per-tick opacity: the normal data-driven reveal, except the top tick (1.0) —
 	// which the data never reaches — fades in at the very end via endFade.
 	const tickOpacity = (t: number) =>
@@ -731,15 +790,89 @@
 	// radius = DOT_R * dotGrow. Static during the reveal (hence the one-shot
 	// tween), but they have to ride the morph, so they follow usK/auK once q > 0.
 	let yearDots = $derived(
-		q === 0
-			? data.map((d) => ({ year: d.year, us: d.usRate, au: d.auRate }))
-			: data.map((d) => ({ year: d.year, us: d.usRate * usK, au: d.auRate * auK }))
+		data.map((d) => ({ year: d.year, us: d.usRate * usK, au: d.auRate * auK }))
 	);
+
+	// ── Dot tooltips ────────────────────────────────────────────────────────────
+	// Desktop only. Hover doesn't exist on touch, a tap would fight the scroll, and
+	// the mobile prose cards already sit over the chart.
+	//
+	// Gated on the SAME condition that mounts the dots, so a tooltip can never fire
+	// for a dot that isn't drawn.
+	// Any scroll kills the tooltip. Scrolling is what drives every transition here,
+	// so rather than tracking `p` and `q` separately this covers both directions and
+	// both transitions with one rule — and it also stops a stale readout hanging
+	// over a chart that's moving underneath it. Unmounting resets HTMLTooltip's own
+	// datum, so it reappears on the next pointermove once things settle.
+	const TIP_SCROLL_QUIET_MS = 150;
+	let scrolling = $state(false);
+
+	$effect(() => {
+		scrollY; // dependency: any scroll at all
+		scrolling = true;
+		const id = setTimeout(() => (scrolling = false), TIP_SCROLL_QUIET_MS);
+		return () => clearTimeout(id);
+	});
+
+	let showTips = $derived(
+		!isMobile && SHOW_DOTS && dotGrow.current > 0.001 && !scrolling
+	);
+
+	// One row per (year, country). Two jobs in one array:
+	//   `y`  — the MORPHED value, so hit-testing matches where the dot actually is;
+	//   the rest — the TRUE rate and count, which is what gets displayed. Mid-morph
+	//   the plotted value is a blend of two units and means nothing, so the numbers
+	//   must never be read off it. Handy side effect: the readout stays rock-steady
+	//   while the chart is moving underneath.
+	let hoverRows = $derived(
+		data.flatMap((d) => [
+			{
+				year: d.year,
+				country: "us" as const,
+				y: d.usRate * usK,
+				rate: d.usRate,
+				count: d.usCount,
+				otherRate: d.auRate,
+				otherCount: d.auCount
+			},
+			{
+				year: d.year,
+				country: "au" as const,
+				y: d.auRate * auK,
+				rate: d.auRate,
+				count: d.auCount,
+				otherRate: d.usRate,
+				otherCount: d.usCount
+			}
+		])
+	);
+
+	const COUNTRY = { us: "United States", au: "Australia" } as const;
+	const fmtRate = (v: number) => v.toFixed(2);
+	const fmtCount = (v: number) => v.toLocaleString("en-US");
+	// Explicit sign, and a real minus (U+2212) rather than a hyphen. Hovered minus
+	// other, so positive always means "the country you're pointing at is ahead" —
+	// which is why the two rows disagree in sign before 2016 and agree after.
+	const signed = (v: number, fmt: (n: number) => string) =>
+		`${v > 0 ? "+" : v < 0 ? "\u2212" : ""}${fmt(Math.abs(v))}`;
+	// Chip background for a difference: the fill of whichever country is AHEAD, so
+	// it reads as the same band the reader sees in the chart and the legend.
+	// Deliberately only on the "vs" column — colouring the raw values too would
+	// make the box a swatch board. The +/- sign already carries the same meaning,
+	// so nothing here is colour-alone. Measured 8.9:1 / 8.3:1 against the ink.
+	const leadFill = (diff: number, country: "us" | "au") =>
+		diff === 0
+			? "transparent"
+			: diff > 0 === (country === "us")
+				? US_FILL
+				: AU_FILL;
 
 	// ── Axis relabelling ────────────────────────────────────────────────────────
 	// A V: both tick sets fade to nothing at LABEL_SWAP_AT, so the axis never
 	// shows two conflicting scales at once and there is no hard pop.
-	let labelFade = $derived(clamp(Math.abs(q - LABEL_SWAP_AT) / LABEL_FADE_SPAN));
+	let labelFade = $derived(
+		clamp(Math.abs(q - LABEL_SWAP_AT) / LABEL_FADE_SPAN)
+	);
 	let showCounts = $derived(q >= LABEL_SWAP_AT);
 	let yLabel = $derived(
 		showCounts ? Y_LABEL_COUNT : `Phase 1 trials per ${PER_LABEL} residents ↑`
@@ -755,6 +888,18 @@
 
 <!-- Read-only: drives the mobile lead note's post-arrival scroll (see leadShift). -->
 <svelte:window bind:scrollY bind:innerHeight={winH} />
+
+<!-- One number cell: plain right-aligned, chipped when a background is given.
+     Deliberately NOT decimal-aligned — padding integer rows out to a shared
+     decimal axis left the two rows visibly staggered, which read worse than the
+     ragged-but-flush right edge. -->
+{#snippet numCell(str: string, bg: string | null)}
+	<span
+		class="ct-tip-num"
+		class:ct-tip-chip={!!bg}
+		style:background={bg ?? undefined}>{str}</span
+	>
+{/snippet}
 
 <!-- The series colours are published as custom properties here so the prose
      copy (.us / .au spans in the notes and the step text) can tint country names
@@ -799,10 +944,13 @@
 					<span class="legend-item">
 						<i class="swatch" style:background={US_FILL}></i>U.S. leads
 					</span>
-					<!-- Fades out with the morph: by q ≈ 0.46 the blue band has been
-					     erased entirely (the U.S. leads every year in absolute terms), so
-					     leaving this swatch up would label a band that isn't there. -->
-					<span class="legend-item" style:opacity={1 - q}>
+					<!-- Stays up through the morph, even though the blue BAND is gone by
+					     q ≈ 0.46 (the U.S. leads every year in absolute terms). It used to
+					     fade out for exactly that reason, but the tooltip's difference chips
+					     reuse these two fills, so this doubles as their key — and "Australia
+					     leads" is still what a blue chip means, on whichever measure the
+					     reader is hovering. -->
+					<span class="legend-item">
 						<i class="swatch" style:background={AU_FILL}></i>Australia leads
 					</span>
 				</div>
@@ -832,58 +980,50 @@
 							ticks: Y_TICKS
 						}}
 					>
-						<!-- Progressive gridlines: a horizontal Line per tick spanning the full
-						     x-domain (so x2 comes from the x-scale, not facetWidth → no NaN).
-						     Each fades in as the data grows tall enough to need it, times the
-						     overall decoration fade. -->
-						{#each Y_TICKS as t (t)}
+						<!-- Gridlines + their numbers. Two sets share one snippet: the rate
+						     ticks (0–10) and the absolute-count ticks (0/250/…/1.75k), which
+						     have different positions and a different label, but identical
+						     geometry. Drawn as Line marks spanning the x-DOMAIN rather than
+						     GridY, whose x2 comes from facetWidth and is NaN pre-measurement.
+						     Each fades in as the data grows tall enough to need it. -->
+						{#snippet gridRow(y: number, label: string, op: number)}
 							<Line
-								data={[{ x: X0, y: t }, { x: X1, y: t }]}
+								data={[
+									{ x: X0, y },
+									{ x: X1, y }
+								]}
 								x="x"
 								y="y"
 								stroke={{ value: AXIS_MUTED, scale: null }}
 								strokeWidth={1}
 								strokeOpacity={0.15}
-								opacity={tickOpacity(t) * rateTickFade}
+								opacity={op}
 							/>
-							<!-- Tick number, faded in tandem with its gridline (implicit axis
-							     numbers hidden via CSS). -->
+							<!-- Implicit axis numbers are hidden in CSS so ours can fade in
+							     lockstep with their own gridline. -->
 							<Text
-								data={[{ x: X0, y: t }]}
+								data={[{ x: X0, y }]}
 								x="x"
 								y="y"
-								text={tickLabel(t)}
+								text={label}
 								fill={{ value: AXIS_MUTED, scale: null }}
 								textAnchor="end"
 								dx={-8}
-								opacity={AXIS_TEXT_OP * tickOpacity(t) * rateTickFade}
+								opacity={AXIS_TEXT_OP * op}
 							/>
+						{/snippet}
+						{#each Y_TICKS as t (t)}
+							{@render gridRow(t, tickLabel(t), tickOpacity(t) * rateTickFade)}
 						{/each}
-						<!-- Absolute-count gridlines. Same shape as the rate ticks above but a
-						     sparser set (0/500/1k/1.5k/2k), with axis positions precomputed into
-						     the fixed [0, Y_MAX] frame. Only mounted once the morph starts, so
-						     the reveal phase renders exactly as before. -->
+						<!-- Count ticks only mount once the morph starts, so the reveal phase
+						     renders exactly as before. -->
 						{#if q > 0}
 							{#each COUNT_TICKS as ct (ct.y)}
-								<Line
-									data={[{ x: X0, y: ct.y }, { x: X1, y: ct.y }]}
-									x="x"
-									y="y"
-									stroke={{ value: AXIS_MUTED, scale: null }}
-									strokeWidth={1}
-									strokeOpacity={0.15}
-									opacity={decorationFade * countTickFade}
-								/>
-								<Text
-									data={[{ x: X0, y: ct.y }]}
-									x="x"
-									y="y"
-									text={ct.label}
-									fill={{ value: AXIS_MUTED, scale: null }}
-									textAnchor="end"
-									dx={-8}
-									opacity={AXIS_TEXT_OP * decorationFade * countTickFade}
-								/>
+								{@render gridRow(
+									ct.y,
+									ct.label,
+									decorationFade * countTickFade
+								)}
 							{/each}
 						{/if}
 						<!-- Invisible full-range anchor: keeps the scales and measured
@@ -915,7 +1055,6 @@
 								negativeFill="Australia higher"
 								curve={CURVE}
 							/>
-								<!-- fillOpacity={0.32} -->
 							<!-- Both series as lines. `scale: null` keeps the literal colours. -->
 							<Line
 								data={plotRows}
@@ -937,11 +1076,27 @@
 							     radius grows in place via the dotGrow tween — 26× fewer marks than
 							     one-per-dot, and no top-left drift. -->
 							{#if SHOW_DOTS && dotGrow.current > 0.001}
-								<Dot data={yearDots} x="year" y="au" r={DOT_R * dotGrow.current} fill={{ value: AU_COLOR, scale: null }} stroke="white" strokeWidth={1} />
-								<Dot data={yearDots} x="year" y="us" r={DOT_R * dotGrow.current} fill={{ value: US_COLOR, scale: null }} stroke="white" strokeWidth={1} />
+								<Dot
+									data={yearDots}
+									x="year"
+									y="au"
+									r={DOT_R * dotGrow.current}
+									fill={{ value: AU_COLOR, scale: null }}
+									stroke="white"
+									strokeWidth={1}
+								/>
+								<Dot
+									data={yearDots}
+									x="year"
+									y="us"
+									r={DOT_R * dotGrow.current}
+									fill={{ value: US_COLOR, scale: null }}
+									stroke="white"
+									strokeWidth={1}
+								/>
 							{/if}
 						{/if}
-						{#if head && p > 0.015}
+						{#if plotHead && p > 0.015}
 							<!-- Labels ride the moving head of each line, just to its right, and
 							     hug the line tip: US sits just above (lineAnchor bottom), Australia
 							     just below (lineAnchor top), so they stay clear of each other at the
@@ -1007,6 +1162,88 @@
 								opacity={calloutFade}
 							/>
 						{/if}
+						<!-- HTMLTooltip must live in Plot's `overlay` snippet, NOT among the
+						     marks. Marks render into the <svg>, where a plain <div> is never laid
+						     out: its rect comes back 0x0 at the origin even though the inline
+						     left/top are right, so the anchor measures 0,0 and the box lands in the
+						     page corner. `overlay` renders into a real positioned div beside the svg.
+						-->
+						{#snippet overlay()}
+							{#if showTips}
+								<!-- HTMLTooltip runs its own nearest-point search and positions an
+							     absolute, pointer-events:none wrapper ON the hovered datum. That
+							     wrapper is doing double duty here: AnchoredTooltip measures it to
+							     place the floating box, and the highlight ring is simply drawn at
+							     its origin. One search, so the ring and the readout can never
+							     disagree about which dot is hovered. -->
+								<HTMLTooltip data={hoverRows} x="year" y={(d) => d.y || 1e-9}>
+									{#snippet children({ datum })}
+										{#if datum}
+											<!-- Reads as the real dot growing: same fill and white stroke
+										     as the Dot marks, drawn twice the radius, centred on the same
+										     point so it simply covers the 6px one beneath. -->
+											<i
+												class="dot-grown"
+												style:--dot={datum.country === "us"
+													? US_COLOR
+													: AU_COLOR}
+											></i>
+											<!-- target: our fonts and --us/--au tokens are scoped to
+										     .scrollo-story, so portaling to <body> would strip them. -->
+											<AnchoredTooltip
+												key={datum}
+												offset={14}
+												align="center"
+												target=".scrollo-story"
+											>
+												<div class="ct-tip">
+													<div class="ct-tip-head">
+														<span class="ct-tip-year">{datum.year}</span>
+														<span
+															class="ct-tip-country"
+															style:color={datum.country === "us"
+																? US_COLOR
+																: AU_COLOR}
+														>
+															{COUNTRY[datum.country]}
+														</span>
+													</div>
+													<div class="ct-tip-grid">
+														<span></span>
+														<span class="ct-tip-col">value</span>
+														<span class="ct-tip-col"
+															>vs {COUNTRY[
+																datum.country === "us" ? "au" : "us"
+															]}</span
+														>
+
+														<span class="ct-tip-label">per million</span>
+														{@render numCell(fmtRate(datum.rate), null)}
+														{@render numCell(
+															signed(datum.rate - datum.otherRate, fmtRate),
+															leadFill(
+																datum.rate - datum.otherRate,
+																datum.country
+															)
+														)}
+
+														<span class="ct-tip-label">total trials</span>
+														{@render numCell(fmtCount(datum.count), null)}
+														{@render numCell(
+															signed(datum.count - datum.otherCount, fmtCount),
+															leadFill(
+																datum.count - datum.otherCount,
+																datum.country
+															)
+														)}
+													</div>
+												</div>
+											</AnchoredTooltip>
+										{/if}
+									{/snippet}
+								</HTMLTooltip>
+							{/if}
+						{/snippet}
 					</Plot>
 				{/if}
 			</div>
@@ -1059,6 +1296,7 @@
 		class="foreground-overlay"
 		class:hide-step-boxes={!SHOW_STEP_BOXES}
 		style:margin-top={`calc(-1 * (100vh - ${headerH}px - ${footerH}px))`}
+		style:--intro-step-pad={INTRO_STEP_PADDING}
 		style:--anim-step-pad={ANIM_STEP_PADDING}
 		style:--morph-step-pad={MORPH_STEP_PADDING}
 		style:--scrollo-container-trim={isMobile ? TAIL_TRIM_MOBILE : TAIL_TRIM}
@@ -1072,8 +1310,7 @@
 		/>
 	</div>
 
-
-	<!-- uncomment below to pull directly from gdoc on page reload -->
+	<!-- Pulls fresh copy from the gdoc on page reload; comment out to freeze. -->
 	<RefreshCopy docId={DOC_ID} bind:data={copy} />
 </div>
 
@@ -1255,6 +1492,98 @@
 		}
 	}
 
+	/* The hovered dot, grown. Drawn at the origin of HTMLTooltip's wrapper, which
+	   sits exactly on the datum — hence the negative margins to centre it. Same
+	   fill + white stroke as the Dot marks at twice the radius (DOT_R 3 → 6), so
+	   it covers the real 6px dot and reads as that dot swelling rather than as a
+	   separate decoration. */
+	.dot-grown {
+		position: absolute;
+		top: 0;
+		left: 0;
+		width: 12px;
+		height: 12px;
+		margin: -6px 0 0 -6px;
+		background: var(--dot);
+		border: 1.5px solid white;
+		border-radius: 50%;
+		box-sizing: border-box;
+		pointer-events: none;
+	}
+
+	/* Tooltip body. font-family/color are set explicitly rather than inherited:
+	   the box is portaled out of this subtree, so it can't rely on the ambient
+	   cascade (see tooltip-guide.md). Sans, not the story's serif — this is a data
+	   readout, not prose. */
+	:global(.ct-tip) {
+		font-family: var(--plot-font, Helvetica, Arial, sans-serif);
+		font-size: 12px;
+		line-height: 1.35;
+		color: #242424;
+		background: #fff;
+		border: 1px solid rgba(0, 0, 0, 0.12);
+		border-radius: 5px;
+		box-shadow: 0 2px 10px rgba(0, 0, 0, 0.16);
+		padding: 7px 9px;
+		white-space: nowrap;
+	}
+
+	:global(.ct-tip-head) {
+		display: flex;
+		align-items: baseline;
+		gap: 6px;
+		margin-bottom: 5px;
+	}
+
+	:global(.ct-tip-year) {
+		font-variant-numeric: tabular-nums;
+		font-weight: 600;
+	}
+
+	:global(.ct-tip-country) {
+		font-weight: 600;
+	}
+
+	/* value + difference side by side, so the two framings can be compared at a
+	   glance — the whole point of the third step. */
+	:global(.ct-tip-grid) {
+		display: grid;
+		grid-template-columns: auto auto auto;
+		/* Row gap has to clear the chip padding — at 2px the two chips touched and
+		   read as one two-tone block. */
+		gap: 5px 14px;
+		align-items: baseline;
+	}
+
+	:global(.ct-tip-col) {
+		font-size: 10px;
+		text-transform: uppercase;
+		letter-spacing: 0.03em;
+		color: #767676;
+		text-align: right;
+	}
+
+	:global(.ct-tip-label) {
+		color: #565656;
+	}
+
+	:global(.ct-tip-num) {
+		font-variant-numeric: tabular-nums;
+		text-align: right;
+		/* Shrink to content: as a stretched grid item the chip background ran the
+		   full column width, trailing a long empty tail to the left of the number. */
+		justify-self: end;
+		white-space: nowrap;
+	}
+
+	/* Difference chips. Background carries which country is ahead (matching the
+	   band + legend colours); the ink stays a text token rather than taking the
+	   series colour. Padded and rounded so it reads as a chip rather than a filled
+	   table cell. */
+	:global(.ct-tip-chip) {
+		padding: 1px 6px;
+		border-radius: 3px;
+	}
 
 	/* Foreground scrolly column sits above the sticky chart. pointer-events are
 	   re-enabled on the step text itself inside ScrolloSteps. */
@@ -1272,15 +1601,20 @@
 		display: none;
 	}
 
-	/* Elongate the step that drives the time-series animation (the 2nd step) so
-	   the reveal is spread over more scrolling. Controlled by --anim-step-pad. */
+	/* Per-step scroll length. Each step's height IS the scroll it is scrubbed
+	   against, so these three rules are pacing controls, not styling.
+	   The indices mirror CHART_STEP / MORPH_STEP in the script — keep them in sync.
+	   Step 1 is listed explicitly even though it restates ScrolloSteps' default:
+	   without it the intro's length lives in a file nobody editing this story
+	   opens, while the other two sit here. */
+	.foreground-overlay :global(.step:nth-child(1)) {
+		padding-bottom: var(--intro-step-pad, 60vh);
+	}
+
 	.foreground-overlay :global(.step:nth-child(2)) {
 		padding-bottom: var(--anim-step-pad, 60vh);
 	}
 
-	/* Scroll length of the 3rd step, which drives the per-capita → absolute morph.
-	   Needs its own rule: the selector above is a literal :nth-child(2), so without
-	   this the new step would silently fall back to ScrolloSteps' 60vh default. */
 	.foreground-overlay :global(.step:nth-child(3)) {
 		padding-bottom: var(--morph-step-pad, 60vh);
 	}
@@ -1325,7 +1659,6 @@
 		   width + margins sum to 100%. */
 		width: 94.5%;
 		margin-left: 2%;
-		/*margin-right: 1.5%;*/
 		margin-right: 2%;
 		/* Anchor for .legend. Safe next to the resize-loop rules above: position
 		   doesn't change the element's own box, only its descendants' reference. */
