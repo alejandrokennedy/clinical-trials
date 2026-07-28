@@ -24,6 +24,9 @@
 	// throws on `<rect height="-…">`. See the render gate in the markup.
 	const MIN_PLOT_H = 80;
 
+	// Used from the config block down, so it lives above everything that needs it.
+	const clamp = (v: number) => Math.min(1, Math.max(0, v));
+
 	let width = $state(1024);
 	let height = $state(800);
 	let isMobile = $derived(width <= MOBILE_BREAKPOINT);
@@ -107,43 +110,28 @@
 	const Y_MAX = Math.ceil(PEAK / Y_TICK_STEP) * Y_TICK_STEP;
 
 	// ── Step 3 axis: absolute counts ────────────────────────────────────────────
-	// d3's tickIncrement algorithm, inlined. d3-array is only a TRANSITIVE dep
-	// (via svelteplot) and pnpm is strict, so importing it would mean adding a
-	// dependency for six lines. Verified to return exactly what `d3.ticks` does.
-	function niceTicks(max: number, count: number) {
-		const step0 = max / count;
-		const pw = Math.floor(Math.log10(step0));
-		const err = step0 / Math.pow(10, pw);
-		const step =
-			(err >= Math.sqrt(50) ? 10 : err >= Math.sqrt(10) ? 5 : err >= Math.sqrt(2) ? 2 : 1) *
-			Math.pow(10, pw);
-		const top = Math.ceil(max / step) * step;
-		return {
-			step,
-			top,
-			ticks: Array.from({ length: Math.round(top / step) + 1 }, (_, i) => i * step)
-		};
-	}
-
-	// Asking for ~4 gives step 500 → top 2000 → 5 ticks (0/500/1000/1500/2000).
-	// Deliberately NOT the 11 ticks the rate axis uses:
-	//   - a denser ask returns step 200 / top 1600, which puts the U.S. peak at
-	//     98.6% of the axis, right where catmull-rom overshoot leaves the frame;
-	//     2000 puts it at a comfortable 78.9%.
-	//   - 5 labels make abbreviation consistent ("0, 500, 1k, 1.5k, 2k"), which
-	//     very nearly fits the mobile marginLeft. Measured, the widest ("1.5k")
-	//     is 23px at the marks' 12px, +8px dx = 31px, so mobile marginLeft went
-	//     30 → 34 for a little slack. Four-digit labels would have needed ~44.
-	const COUNT_TICK_COUNT = 4;
+	// Explicit rather than derived. d3's tick algorithm (and the inlined copy this
+	// replaced) picks steps from the 1 / 2 / 5 × 10^k progression, so it can only
+	// offer 500→2000 or 200→1600 here — it has no way to produce a QUARTER step.
+	// 250 → 1750 is an editorial choice, so it's stated outright.
+	//
+	// Headroom check: the tallest count is the U.S. 1578 in 2021, which lands at
+	// 90% of a 1750 axis. That's tighter than the old 2000 top (79%) but still
+	// clears the frame — catmull-rom overshoot at that peak is ~0.1 axis units.
+	// If COUNT_PEAK ever exceeds Y_MAX_COUNT the line would run out of the top.
+	const Y_MAX_COUNT = 1750;
+	const COUNT_TICK_STEP = 250;
 	const COUNT_PEAK = Math.max(...counts.map(([, us, au]) => Math.max(us, au)));
-	const countAxis = niceTicks(COUNT_PEAK, COUNT_TICK_COUNT);
-	const Y_MAX_COUNT = countAxis.top;
-	// Count ticks carried in AXIS units, so they drop straight into the fixed
-	// [0, Y_MAX] frame: 0, 2.5, 5, 7.5, 10 — three of which coincide with existing
-	// rate gridlines, so the grid barely reshuffles.
-	const COUNT_TICKS = countAxis.ticks.map((v) => ({
+
+	// Carried in AXIS units so they drop straight into the fixed [0, Y_MAX] frame.
+	// toFixed(2) not (1): at quarter steps 1250 would round to "1.3k". The unary +
+	// then strips the trailing zeros again, so 1000 → "1k", 1500 → "1.5k".
+	const COUNT_TICKS = Array.from(
+		{ length: Math.round(Y_MAX_COUNT / COUNT_TICK_STEP) + 1 },
+		(_, i) => i * COUNT_TICK_STEP
+	).map((v) => ({
 		y: (v / Y_MAX_COUNT) * Y_MAX,
-		label: v >= 1000 ? `${+(v / 1000).toFixed(1)}k` : String(v)
+		label: v >= 1000 ? `${+(v / 1000).toFixed(2)}k` : String(v)
 	}));
 
 	// Series colours (strong line + label colours; the fill uses the muted
@@ -174,12 +162,33 @@
 	// Scroll length of the 3rd step, which morphs the chart from per-capita rates
 	// to absolute counts.
 	const MORPH_STEP_PADDING = "100vh";
+	// When note 3 starts rising, as a fraction of step 3's progress. Mobile waits:
+	// the lead note is only ~45px past its resting spot when step 3 begins and is
+	// still scrolling out of the top, so note 3 holds off until it has cleared.
+	const NOTE3_START_DESKTOP = 0.1;
+	const NOTE3_START_MOBILE = 0.45;
+	let note3Start = $derived(isMobile ? NOTE3_START_MOBILE : NOTE3_START_DESKTOP);
+
 	// The morph's window INSIDE that step, as 0→1 fractions of its progress.
-	// A head start lets the reader register the new step before anything moves;
-	// END at 1 means the morph uses the whole step and the container runway after
-	// it is the beat — one fewer lever coupled to TAIL_TRIM.
-	const MORPH_START = 0.1;
+	// START is keyed to note 3's arrival rather than being a fixed number, so the
+	// chart never rescales itself while the note explaining why is still off
+	// screen. On desktop the two were already both 0.1, so this is a no-op there;
+	// on mobile it holds the morph back from 0.1 to 0.45.
+	//
+	// MORPH_START_OFFSET nudges the two apart: negative = the chart starts moving
+	// BEFORE the note lands, positive = the note lands first and the chart follows.
+	// ±0.05 is roughly ±40px of scroll on a 780px phone.
+	//
+	// END at 1 means the morph uses the rest of the step and the container runway
+	// after it is the beat — one fewer lever coupled to TAIL_TRIM.
+	const MORPH_START_OFFSET = 0;
 	const MORPH_END = 1.0;
+	// Floored at 0 and kept clear of MORPH_END: if the two met, the window would be
+	// zero-width and `q` would snap 0→1 in a single frame.
+	const MORPH_MIN_SPAN = 0.05;
+	let morphStart = $derived(
+		Math.min(clamp(note3Start + MORPH_START_OFFSET), MORPH_END - MORPH_MIN_SPAN)
+	);
 	// Optional scroll smoothing, mirroring ANIM_TWEEN_MS (also 0 = follow scroll
 	// exactly). Left at 0; raise if the morph reads as jittery on a trackpad.
 	const MORPH_TWEEN_MS = 0;
@@ -211,6 +220,11 @@
 	// animations' own scroll lengths, and stepPx (the 1:1 note math) reads the
 	// chart step, not this.
 	const TAIL_TRIM = "30vh";
+	// Mobile keeps the FULL runway. It isn't dead scroll there any more: note 3
+	// persists its scroll rather than parking, so it is still travelling out
+	// through that stretch — the same reason the old .lead-exit-runway existed.
+	// Trimming it strands the note ~100px inside the frame at max scroll.
+	const TAIL_TRIM_MOBILE = "0vh";
 
 	// ── Progressive y-gridlines (fade in as the data grows tall enough) ──────────
 	// Generated from the domain, not hand-listed, so a unit change can't leave the
@@ -362,7 +376,6 @@
 	});
 	let p = $derived(reveal.current);
 
-	const clamp = (v: number) => Math.min(1, Math.max(0, v));
 
 	// ── Step 3 progress (`q`) ───────────────────────────────────────────────────
 	// A PARALLEL derivation, not an extension of `target`. `p` has to stay pinned
@@ -386,7 +399,7 @@
 	// first half of q (2017 flips at q≈0.08, 2025 at q≈0.46), so easing the start
 	// gives that sweep room to read instead of firing off immediately.
 	let q = $derived(
-		cubicInOut(clamp((morph.current - MORPH_START) / (MORPH_END - MORPH_START)))
+		cubicInOut(clamp((morph.current - morphStart) / (MORPH_END - morphStart)))
 	);
 
 	// Chart decoration (axes, labels, grid) stays hidden until the reveal reaches
@@ -483,7 +496,7 @@
 	// mobile's took ~235px. Distance is what sets the duration here, so matching
 	// mobile's distances is what matches its pace; stretching a 48px move over
 	// 235px of scroll would have put desktop back at ~0.2× and undone the 1:1 fix.
-	const LEAD_SHIFT = 220;
+	const LEAD_SHIFT = 150;
 	const NOTE_SHIFT_FALLBACK = 48; // used only until the intro note is measured
 	// A 1:1 move costs its distance in scroll, and only (1 − CROSS_REVEAL) of the
 	// step is left after the crossover. Cap any travel so it always completes by
@@ -505,7 +518,15 @@
 	// old behaviour rather than dividing by zero.
 	const SPAN_FALLBACK = 0.08;
 	const toSpan = (px: number) => (stepPx > 0 ? px / stepPx : SPAN_FALLBACK);
-	let introTravelled = $derived(clamp((p - CROSS_REVEAL) / toSpan(introTravel)));
+	// The intro starts leaving BEFORE the crossover, not at it. The notes form a
+	// conveyor — each rises from below, holds, then rises out of the top — and if
+	// note 1 only began leaving at the takeover, note 2 would be arriving into an
+	// occupied frame. Giving note 1 a head start means that by the time the
+	// takeover lands, note 2 is appearing into space note 1 has already vacated,
+	// and each note gets roughly equal screen time.
+	const INTRO_EXIT_LEAD = 0.09; // in units of `p`, ahead of CROSS_REVEAL
+	let introExitStart = $derived(CROSS_REVEAL - INTRO_EXIT_LEAD);
+	let introTravelled = $derived(clamp((p - introExitStart) / toSpan(introTravel)));
 	let leadTravelled = $derived(clamp((p - CROSS_REVEAL) / toSpan(leadTravel)));
 	// OPACITY is deliberately NOT tied to the travel: a paragraph scrolling through
 	// frame doesn't slowly materialise (or dissolve) over its whole journey. The
@@ -546,13 +567,13 @@
 	// Its own step measurement, deliberately a separate effect rather than a
 	// parameterised version of the stepPx one: that effect is load-bearing for the
 	// reveal's 1:1 math and handoffScrollY, and isn't worth the regression risk.
+	// NOTE3_START_* / note3Start live up in the config block — the morph window is
+	// keyed to them, so they have to be declared before it reads them.
 	const NOTE3_SHIFT = LEAD_SHIFT;
-	const NOTE3_START_DESKTOP = 0.1;
-	// Mobile waits: the lead note is only ~45px past its resting spot when step 3
-	// begins and is still scrolling out through the first part of the morph.
-	const NOTE3_START_MOBILE = 0.45;
-	let note3Start = $derived(isMobile ? NOTE3_START_MOBILE : NOTE3_START_DESKTOP);
 	let morphStepPx = $state(0);
+	// Step 3's absolute document top — needed only for the mobile keep-scrolling
+	// mode below, which is driven by raw scrollY rather than by step progress.
+	let morphStepTopPx = $state(0);
 
 	$effect(() => {
 		const el = overlayEl?.querySelector<HTMLElement>(
@@ -561,7 +582,10 @@
 		if (!el) return;
 		void winH;
 		void width;
-		const measure = () => (morphStepPx = el.offsetHeight);
+		const measure = () => {
+			morphStepPx = el.offsetHeight;
+			morphStepTopPx = window.scrollY + el.getBoundingClientRect().top;
+		};
 		measure();
 		const ro = new ResizeObserver(measure);
 		ro.observe(el);
@@ -577,7 +601,20 @@
 	let note3Travelled = $derived(
 		clamp((morphTarget - note3Start) / morphSpan(note3Travel))
 	);
-	let note3Shift = $derived((1 - note3Travelled) * note3Travel);
+	// Mobile persists the scroll: note 3 rises in and then carries straight on up
+	// and out, the same as note 2 — the conveyor never parks anything. Anchored to
+	// raw scrollY for the same reason note 2 is: `morphTarget` stops advancing at
+	// the end of step 3, so a progress-driven version would freeze the note mid
+	// frame. Desktop still parks (it rests at top: 12%, with nothing following it).
+	let note3HandoffScrollY = $derived(
+		morphStepTopPx + note3Start * morphStepPx - triggerPx
+	);
+	let scrolledSinceNote3 = $derived(Math.max(0, scrollY - note3HandoffScrollY));
+	let note3Shift = $derived(
+		isMobile
+			? note3Travel - scrolledSinceNote3 // rises in, then keeps going (negative)
+			: (1 - note3Travelled) * note3Travel // rises in, then parks at 0
+	);
 	let note3Opacity = $derived(clamp((morphTarget - note3Start) / CROSS_FADE_SPAN));
 
 	// Desktop lead note has to LEAVE now — it parks forever, and would otherwise
@@ -601,21 +638,16 @@
 			? leadTravel - scrolledSinceHandoff // rises in, then keeps going (negative)
 			: (1 - leadTravelled) * leadTravel - leadExited * leadExitTravel // parks, then exits
 	);
-	// Mobile needs its own exit fade. The lead note rests at the BOTTOM of the
-	// frame there, so scrolling out takes a full frame height (~730px) — measured,
-	// it is still fully on screen when note 3 arrives, and the two cards stack
-	// into a wall of text over the chart. Fading it against morphTarget clears
-	// that without touching the 1:1 motion: it finishes exactly as note 3 starts
-	// its rise. Desktop fades on its own travel instead (it has already parked).
-	const LEAD_FADE_MOBILE_START = 0.28;
+	// Mobile stays fully opaque and simply rises out of the top, the same way the
+	// intro note leaves — no fade. That's only safe because note 3 is a BOTTOM
+	// card on mobile (see the @media block): the two notes occupy opposite ends of
+	// the conveyor, so they never stack even while both are technically mounted.
+	// Desktop still fades on its own travel, because there it PARKS at top: 12%
+	// and note 3 arrives into the same spot.
 	let leadOpacity = $derived(
 		leadArrival *
 			(isMobile
-				? 1 -
-					clamp(
-						(morphTarget - LEAD_FADE_MOBILE_START) /
-							(note3Start - LEAD_FADE_MOBILE_START)
-					)
+				? 1
 				: 1 - clamp((leadExited - (1 - INTRO_EXIT_FADE)) / INTRO_EXIT_FADE))
 	);
 
@@ -785,7 +817,7 @@
 					<Plot
 						width={chartWidth}
 						height={chartHeight}
-						marginLeft={isMobile ? 34 : 50}
+						marginLeft={isMobile ? 40 : 50}
 						marginRight={isMobile ? 60 : 80}
 						x={{
 							domain: [X0, X1],
@@ -1029,7 +1061,7 @@
 		style:margin-top={`calc(-1 * (100vh - ${headerH}px - ${footerH}px))`}
 		style:--anim-step-pad={ANIM_STEP_PADDING}
 		style:--morph-step-pad={MORPH_STEP_PADDING}
-		style:--scrollo-container-trim={TAIL_TRIM}
+		style:--scrollo-container-trim={isMobile ? TAIL_TRIM_MOBILE : TAIL_TRIM}
 	>
 		<ScrolloSteps
 			bind:step
@@ -1209,8 +1241,15 @@
 		/* The lead note (Australia's dominance) rides up from the bottom of the frame
 		   (LEAD_SHIFT) and rests as a bottom card, so the whole chart body — the blue
 		   peak it describes AND the crossover callout — stays visible above it.
-		   Covers only the x-axis strip, which the reader has already scrolled by. */
-		.lead-note {
+		   Covers only the x-axis strip, which the reader has already scrolled by.
+
+		   Note 3 does the same, so mobile reads as one conveyor: every note enters
+		   from below the frame, holds as a bottom card, then rises out of the top.
+		   It also keeps the two apart — note 2 is on its way out of the TOP by the
+		   time note 3 arrives at the BOTTOM — which is what lets note 2 leave by
+		   scrolling rather than fading. */
+		.lead-note,
+		.raw-note {
 			top: auto;
 			bottom: 4%;
 		}
