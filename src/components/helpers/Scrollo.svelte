@@ -222,7 +222,16 @@
 
 <style>
 	.scrollyContainer {
-		padding-bottom: 100vh;
+		/* Trailing runway AFTER the last step — the stretch where the sticky
+		   graphic is still pinned but nothing is being driven any more. Distinct
+		   from a step's own padding-bottom, which IS the scroll the step's
+		   animation is scrubbed against.
+
+		   `--scrollo-container-trim` claws some of it back for stories that don't
+		   need a full viewport of hold (e.g. a desktop layout where the last
+		   element has already settled), without restating the 100vh default at the
+		   call site. max() keeps padding non-negative if a trim overshoots. */
+		padding-bottom: max(0px, calc(100vh - var(--scrollo-container-trim, 0px)));
 		margin-top: 0vh;
 	}
 </style>

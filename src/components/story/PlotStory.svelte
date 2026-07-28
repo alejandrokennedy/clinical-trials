@@ -115,6 +115,19 @@
 	// Scroll length of the step that drives the time-series animation (the 2nd
 	// step). Longer → the reveal is spread over more scrolling.
 	const ANIM_STEP_PADDING = "100vh";
+	// How much of Scrollo's trailing runway to reclaim on DESKTOP. That runway
+	// (.scrollyContainer's padding-bottom, 100vh) is scroll where the chart is
+	// still pinned but nothing is animating: measured, the reveal finishes ~980px
+	// before the end on a 1280×900 desktop, and the lead note has parked well
+	// before that — so ~750px of it is dead. 50vh leaves roughly a third of a
+	// viewport to hold the finished chart, which reads as a beat rather than a
+	// stall. Raise to trim more; 0vh restores the original tail.
+	//
+	// NOT applied on mobile: there the lead note is still scrolling out through
+	// that stretch (see leadShift's keep-scrolling mode), so the runway is in use.
+	// This does NOT touch pacing — ANIM_STEP_PADDING above is the animation's own
+	// scroll length, and stepPx (the 1:1 scroll math) reads that step, not this.
+	const TAIL_TRIM_DESKTOP = "55vh";
 
 	// ── Progressive y-gridlines (fade in as the data grows tall enough) ──────────
 	const Y_TICKS = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0];
@@ -699,6 +712,7 @@
 		class:hide-step-boxes={!SHOW_STEP_BOXES}
 		style:margin-top={`calc(-1 * (100vh - ${headerH}px - ${footerH}px))`}
 		style:--anim-step-pad={ANIM_STEP_PADDING}
+		style:--scrollo-container-trim={isMobile ? "0px" : TAIL_TRIM_DESKTOP}
 	>
 		<ScrolloSteps
 			bind:step
