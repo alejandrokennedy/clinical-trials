@@ -64,9 +64,17 @@
 
 	// ── Data ──────────────────────────────────────────────────────────────────
 	// Phase 1 clinical-trial counts by start year (ClinicalTrials.gov extract),
-	// normalized to trials per 100,000 residents. Mirrors the Observable notebook
-	// (cell 8): reference resident populations, then count / (pop / 1e5).
+	// normalized to trials per PER residents. Mirrors the Observable notebook
+	// (cell 8): reference resident populations, then count / (pop / PER).
 	const POP = { us: 334_900_000, au: 26_640_000 };
+
+	// ── Rate unit ─────────────────────────────────────────────────────────────
+	// The ONE place the denominator lives. Everything downstream is derived from
+	// it — the series values, the y-domain, the gridline ticks and their fade
+	// timing — so changing units is these two lines plus the axis label, not a
+	// hunt through hardcoded numbers. (Was 1e5 / "100,000".)
+	const PER = 1e6;
+	const PER_LABEL = "million";
 
 	// [startYear, usCount, auCount]
 	const counts: [number, number, number][] = [
@@ -79,16 +87,24 @@
 		[2024, 1375, 256], [2025, 1369, 238]
 	];
 
+	// Field names are deliberately unit-NEUTRAL (`usRate`, not `usPer100k`) so a
+	// change of denominator doesn't ripple through every mark in the markup.
 	const data = counts.map(([year, us, au]) => ({
 		year,
-		usPer100k: us / (POP.us / 1e5),
-		auPer100k: au / (POP.au / 1e5)
+		usRate: us / (POP.us / PER),
+		auRate: au / (POP.au / PER)
 	}));
 
 	// Fixed scales so the frame stays put while the lines grow into it.
 	const X0 = data[0].year;
 	const X1 = data[data.length - 1].year;
-	const Y_MAX = 1.0; // a touch above Australia's 2024 peak (~0.96)
+
+	// Round the domain up to a clean tick above the tallest series, rather than
+	// hardcoding it: at /million Australia peaks at ~9.61 in 2024, so this lands
+	// on 10. Y_TICK_STEP is the gridline interval.
+	const Y_TICK_STEP = PER / 1e6; // 1 per million; 0.1 per 100k — same tick count
+	const PEAK = Math.max(...data.map((d) => Math.max(d.usRate, d.auRate)));
+	const Y_MAX = Math.ceil(PEAK / Y_TICK_STEP) * Y_TICK_STEP;
 
 	// Series colours (strong line + label colours; the fill uses the muted
 	// RdYlBu scheme underneath). Passed with `scale: null` so SveltePlot uses
@@ -130,18 +146,31 @@
 	const TAIL_TRIM_DESKTOP = "55vh";
 
 	// ── Progressive y-gridlines (fade in as the data grows tall enough) ──────────
-	const Y_TICKS = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0];
-	// Timing knob: how soon each gridline/number fades in relative to the data
-	// reaching it. Higher = sooner.
-	const TICK_LEAD = 0.06; // gridline appears a touch before the data reaches it
-	const TICK_FADE_SPAN = 0.08; // data-units over which each gridline fades in
+	// Generated from the domain, not hand-listed, so a unit change can't leave the
+	// ticks describing the old scale. toFixed guards float drift on fractional
+	// steps (0.1 + 0.2 = 0.30000000000000004).
+	const Y_TICKS = Array.from(
+		{ length: Math.round(Y_MAX / Y_TICK_STEP) + 1 },
+		(_, i) => +(i * Y_TICK_STEP).toFixed(10)
+	);
+	// Decimals needed to print a tick — 0 at /million, 1 at /100k. Keeps the
+	// labels honest without a second hardcoded assumption about the unit.
+	const TICK_DECIMALS = Y_TICK_STEP < 1 ? 1 : 0;
+	const tickLabel = (t: number) => t.toFixed(TICK_DECIMALS);
+	// Timing knobs: how soon each gridline/number fades in relative to the data
+	// reaching it. Higher = sooner. Expressed as FRACTIONS OF THE AXIS rather than
+	// raw data units — as literals they silently retimed the whole fade whenever
+	// the scale changed (0.06 is a gentle lead on a 0→1 axis, a nearly invisible
+	// one on 0→10).
+	const TICK_LEAD = 0.06 * Y_MAX; // gridline appears a touch before the data reaches it
+	const TICK_FADE_SPAN = 0.08 * Y_MAX; // span over which each gridline fades in
 	// The x-year labels carry SveltePlot's built-in 0.8 axis-text opacity; match it
 	// on our custom y-numbers so the two read the same.
 	const AXIS_TEXT_OP = 0.8;
 
 	// ── End-of-animation ramp ────────────────────────────────────────────────────
-	// The top gridline/number (1.0) fades in over the last TAIL_SPAN of the reveal
-	// (the data peaks at ~0.96, so 1.0 needs its own cue).
+	// The top gridline/number (Y_MAX) fades in over the last TAIL_SPAN of the
+	// reveal — the data stops just short of it, so it needs its own cue.
 	const TAIL_SPAN = 0.06;
 
 	// ── Year dots ────────────────────────────────────────────────────────────────
@@ -290,16 +319,33 @@
 	// ── 2016 crossover annotation ───────────────────────────────────────────────
 	// The lines cross (US = Australia per capita) between 2016 and 2017; ~2016.5.
 	// Kept in chart coordinates so the callout + leader stay anchored on resize.
-	const CROSS = { year: 2016.5, value: 0.412 }; // the crossover point
-	// Callout text position, per breakpoint.
+	// The crossover VALUE is a fact about the data, not a placement, so read it off
+	// the series instead of hardcoding it in whatever unit happened to be current
+	// (it used to be a bare 0.412, only meaningful on the old /100k axis). The two
+	// series are within ~0.5% of each other here, so their mean is the crossing.
+	const CROSS_YEAR = 2016.5;
+	const rateAt = (year: number, key: "usRate" | "auRate") => {
+		const i = data.findIndex((d) => d.year >= year);
+		if (i <= 0) return data[Math.max(i, 0)][key];
+		const a = data[i - 1];
+		const b = data[i];
+		return a[key] + ((year - a.year) / (b.year - a.year)) * (b[key] - a[key]);
+	};
+	const CROSS = {
+		year: CROSS_YEAR,
+		value: (rateAt(CROSS_YEAR, "usRate") + rateAt(CROSS_YEAR, "auRate")) / 2
+	};
+	// Callout text position, per breakpoint. Heights are FRACTIONS OF THE AXIS —
+	// these are arbitrary placements, so pinning them to the domain keeps them put
+	// through a unit change.
 	//   Desktop — lower-RIGHT of the dot, in the wedge under the crossing lines.
 	//   Mobile   — upper-LEFT instead: the mobile lead note rests as a bottom card
 	//     (see `.lead-note` in the @media block), which lands on top of a
-	//     lower-right callout. The 2000–2015 × 0.5–1.0 quadrant is empty on both
-	//     series (the U.S. peaks at ~0.47, Australia stays under 0.35 until 2016),
-	//     so the text AND its leader clear the data.
-	const CROSS_LABEL_DESKTOP = { year: 2019, value: 0.2 };
-	const CROSS_LABEL_MOBILE = { year: 2007.5, value: 0.56 };
+	//     lower-right callout. The 2000–2015 × upper-half quadrant is empty on both
+	//     series (the U.S. peaks at ~47% of the axis, Australia stays under 35%
+	//     until 2016), so the text AND its leader clear the data.
+	const CROSS_LABEL_DESKTOP = { year: 2019, value: 0.2 * Y_MAX };
+	const CROSS_LABEL_MOBILE = { year: 2007.5, value: 0.56 * Y_MAX };
 	let crossLabel = $derived(isMobile ? CROSS_LABEL_MOBILE : CROSS_LABEL_DESKTOP);
 	const CROSS_REVEAL = (CROSS.year - X0) / (X1 - X0); // ≈ 0.66
 	// Shared fade duration for ALL annotation text (intro, lead note, callout).
@@ -416,8 +462,8 @@
 			const t = (cx - a.year) / (b.year - a.year);
 			out.push({
 				year: cx,
-				usPer100k: a.usPer100k + t * (b.usPer100k - a.usPer100k),
-				auPer100k: a.auPer100k + t * (b.auPer100k - a.auPer100k)
+				usRate: a.usRate + t * (b.usRate - a.usRate),
+				auRate: a.auRate + t * (b.auRate - a.auRate)
 			});
 		}
 		return out;
@@ -434,7 +480,7 @@
 	// Largest value drawn so far → which gridlines are "needed" yet. Non-decreasing
 	// because `visible` always spans from 2000 to the moving cutoff.
 	let maxVisible = $derived(
-		visible.reduce((m, d) => Math.max(m, d.usPer100k, d.auPer100k), 0)
+		visible.reduce((m, d) => Math.max(m, d.usRate, d.auRate), 0)
 	);
 	const tickReveal = (t: number) =>
 		Math.min(1, Math.max(0, (maxVisible - t + TICK_LEAD) / TICK_FADE_SPAN));
@@ -446,7 +492,7 @@
 	// Year dots (one per line per year); they grow in together at the very end,
 	// radius = DOT_R * endFade. Positions are static.
 	let yearDots = $derived(
-		data.map((d) => ({ year: d.year, us: d.usPer100k, au: d.auPer100k }))
+		data.map((d) => ({ year: d.year, us: d.usRate, au: d.auRate }))
 	);
 </script>
 
@@ -489,7 +535,7 @@
 				     clientWidth/clientHeight (which feed the Plot) measure the content
 				     box, and out-of-flow children don't contribute to it. `top: 3px` is
 				     SveltePlot's measured offset for .axis-y-title, so the legend sits on
-				     the same line as "Phase 1 trials per 100,000 residents" at the
+				     the same line as the y-axis title at the
 				     opposite end of the row. Fades in with the rest of the chart
 				     furniture via decorationFade. -->
 				<div class="legend" style:opacity={decorationFade}>
@@ -505,7 +551,7 @@
 				     On the first paint the container measures 0, which makes the plot
 				     body height negative and SveltePlot throw. -->
 				{#if data?.length && chartHeight >= MIN_PLOT_H}
-					<!-- Phase 1 trials per 100,000 residents (US vs Australia), revealed
+					<!-- Phase 1 trials per capita (US vs Australia), revealed
 					     over time by scroll. Fixed x/y domains keep the frame steady while
 					     the lines and the difference fill grow left→right. -->
 					<Plot
@@ -522,7 +568,7 @@
 						y={{
 							domain: [0, Y_MAX],
 							grid: false,
-							label: "Phase 1 trials per 100,000 residents ↑",
+							label: `Phase 1 trials per ${PER_LABEL} residents ↑`,
 							ticks: Y_TICKS
 						}}
 					>
@@ -546,7 +592,7 @@
 								data={[{ x: X0, y: t }]}
 								x="x"
 								y="y"
-								text={String(+t.toFixed(1))}
+								text={tickLabel(t)}
 								fill={{ value: AXIS_MUTED, scale: null }}
 								textAnchor="end"
 								dx={-8}
@@ -559,7 +605,7 @@
 						<Line
 							data={[data[0], data[data.length - 1]]}
 							x="year"
-							y="usPer100k"
+							y="usRate"
 							strokeOpacity={0}
 						/>
 						{#if hasSpan}
@@ -576,8 +622,8 @@
 							<DifferenceY
 								data={visible}
 								x="year"
-								y2="usPer100k"
-								y1="auPer100k"
+								y2="usRate"
+								y1="auRate"
 								positiveFill="United States higher"
 								negativeFill="Australia higher"
 								curve={CURVE}
@@ -587,7 +633,7 @@
 							<Line
 								data={visible}
 								x="year"
-								y="auPer100k"
+								y="auRate"
 								stroke={{ value: AU_COLOR, scale: null }}
 								strokeWidth={2.5}
 								curve={CURVE}
@@ -595,7 +641,7 @@
 							<Line
 								data={visible}
 								x="year"
-								y="usPer100k"
+								y="usRate"
 								stroke={{ value: US_COLOR, scale: null }}
 								strokeWidth={2.5}
 								curve={CURVE}
@@ -616,7 +662,7 @@
 							<Text
 								data={[head]}
 								x="year"
-								y="usPer100k"
+								y="usRate"
 								text="U.S. 🇺🇸"
 								fill={{ value: US_COLOR, scale: null }}
 								fontWeight={600}
@@ -628,7 +674,7 @@
 							<Text
 								data={[head]}
 								x="year"
-								y="auPer100k"
+								y="auRate"
 								text={isMobile ? "Aus. 🇦🇺" : "Australia 🇦🇺"}
 								fill={{ value: AU_COLOR, scale: null }}
 								fontWeight={600}
