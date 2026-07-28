@@ -2,11 +2,15 @@
   "story": [
     {
       "name": "us",
-      "text": "For the first 16 years of this millennium, the <span class=\"us\">U.S.</span> completed (?) more phase 1 trials per 100,000 residents than <span class=\"au\">Australia</span>"
+      "text": "For the first 16 years of this millennium, the <span class=\"us\">U.S.</span> completed (??) more phase 1 trials per million residents than <span class=\"au\">Australia</span>."
     },
     {
       "name": "australia",
-      "text": "However, since 2016 <span class=\"au\">Australia</span> has taken the lead in phase 1 trials per 100,000 residents, driven by [x] and [y] factors."
+      "text": "However, since 2016 <span class=\"au\">Australia</span> has taken the lead in phase 1 trials per million residents, driven by [x] and [y] factors."
+    },
+    {
+      "name": "raw",
+      "text": "When we look at raw numbers, the US is still ahead by far…"
     }
   ]
 }

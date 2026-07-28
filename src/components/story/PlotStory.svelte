@@ -6,7 +6,7 @@
 	import ScrolloSteps from "$components/helpers/ScrolloSteps.svelte";
 	import chapters from "$data/plotStorySteps.json";
 	import { Tween } from "svelte/motion";
-	import { cubicOut } from "svelte/easing";
+	import { cubicOut, cubicInOut } from "svelte/easing";
 	import RefreshCopy from "$components/helpers/RefreshCopy.svelte";
 
 	interface Props {
@@ -106,6 +106,46 @@
 	const PEAK = Math.max(...data.map((d) => Math.max(d.usRate, d.auRate)));
 	const Y_MAX = Math.ceil(PEAK / Y_TICK_STEP) * Y_TICK_STEP;
 
+	// ── Step 3 axis: absolute counts ────────────────────────────────────────────
+	// d3's tickIncrement algorithm, inlined. d3-array is only a TRANSITIVE dep
+	// (via svelteplot) and pnpm is strict, so importing it would mean adding a
+	// dependency for six lines. Verified to return exactly what `d3.ticks` does.
+	function niceTicks(max: number, count: number) {
+		const step0 = max / count;
+		const pw = Math.floor(Math.log10(step0));
+		const err = step0 / Math.pow(10, pw);
+		const step =
+			(err >= Math.sqrt(50) ? 10 : err >= Math.sqrt(10) ? 5 : err >= Math.sqrt(2) ? 2 : 1) *
+			Math.pow(10, pw);
+		const top = Math.ceil(max / step) * step;
+		return {
+			step,
+			top,
+			ticks: Array.from({ length: Math.round(top / step) + 1 }, (_, i) => i * step)
+		};
+	}
+
+	// Asking for ~4 gives step 500 → top 2000 → 5 ticks (0/500/1000/1500/2000).
+	// Deliberately NOT the 11 ticks the rate axis uses:
+	//   - a denser ask returns step 200 / top 1600, which puts the U.S. peak at
+	//     98.6% of the axis, right where catmull-rom overshoot leaves the frame;
+	//     2000 puts it at a comfortable 78.9%.
+	//   - 5 labels make abbreviation consistent ("0, 500, 1k, 1.5k, 2k"), which
+	//     very nearly fits the mobile marginLeft. Measured, the widest ("1.5k")
+	//     is 23px at the marks' 12px, +8px dx = 31px, so mobile marginLeft went
+	//     30 → 34 for a little slack. Four-digit labels would have needed ~44.
+	const COUNT_TICK_COUNT = 4;
+	const COUNT_PEAK = Math.max(...counts.map(([, us, au]) => Math.max(us, au)));
+	const countAxis = niceTicks(COUNT_PEAK, COUNT_TICK_COUNT);
+	const Y_MAX_COUNT = countAxis.top;
+	// Count ticks carried in AXIS units, so they drop straight into the fixed
+	// [0, Y_MAX] frame: 0, 2.5, 5, 7.5, 10 — three of which coincide with existing
+	// rate gridlines, so the grid barely reshuffles.
+	const COUNT_TICKS = countAxis.ticks.map((v) => ({
+		y: (v / Y_MAX_COUNT) * Y_MAX,
+		label: v >= 1000 ? `${+(v / 1000).toFixed(1)}k` : String(v)
+	}));
+
 	// Series colours (strong line + label colours; the fill uses the muted
 	// RdYlBu scheme underneath). Passed with `scale: null` so SveltePlot uses
 	// them literally instead of routing them through the colour scale.
@@ -131,19 +171,46 @@
 	// Scroll length of the step that drives the time-series animation (the 2nd
 	// step). Longer → the reveal is spread over more scrolling.
 	const ANIM_STEP_PADDING = "100vh";
-	// How much of Scrollo's trailing runway to reclaim on DESKTOP. That runway
+	// Scroll length of the 3rd step, which morphs the chart from per-capita rates
+	// to absolute counts.
+	const MORPH_STEP_PADDING = "100vh";
+	// The morph's window INSIDE that step, as 0→1 fractions of its progress.
+	// A head start lets the reader register the new step before anything moves;
+	// END at 1 means the morph uses the whole step and the container runway after
+	// it is the beat — one fewer lever coupled to TAIL_TRIM.
+	const MORPH_START = 0.1;
+	const MORPH_END = 1.0;
+	// Optional scroll smoothing, mirroring ANIM_TWEEN_MS (also 0 = follow scroll
+	// exactly). Left at 0; raise if the morph reads as jittery on a trackpad.
+	const MORPH_TWEEN_MS = 0;
+	// q at which the y-axis changes meaning, and the fade span either side of it.
+	// Both tick sets are invisible at the swap, so there is never a double grid.
+	const LABEL_SWAP_AT = 0.5;
+	const LABEL_FADE_SPAN = 0.18;
+	// How fast the 2016 crossover callout leaves once the morph starts. It is a
+	// claim about the PER-CAPITA chart, and the crossing it points at begins
+	// sweeping right at q ≈ 0.08, so it has to be gone early.
+	const CROSS_EXIT_SPAN = 0.15;
+	// Axis title once the chart is showing absolute counts.
+	const Y_LABEL_COUNT = "Phase 1 trials started ↑";
+	// How much of Scrollo's trailing runway to reclaim. That runway
 	// (.scrollyContainer's padding-bottom, 100vh) is scroll where the chart is
-	// still pinned but nothing is animating: measured, the reveal finishes ~980px
-	// before the end on a 1280×900 desktop, and the lead note has parked well
-	// before that — so ~750px of it is dead. 50vh leaves roughly a third of a
-	// viewport to hold the finished chart, which reads as a beat rather than a
-	// stall. Raise to trim more; 0vh restores the original tail.
+	// still pinned but nothing is animating.
 	//
-	// NOT applied on mobile: there the lead note is still scrolling out through
-	// that stretch (see leadShift's keep-scrolling mode), so the runway is in use.
-	// This does NOT touch pacing — ANIM_STEP_PADDING above is the animation's own
-	// scroll length, and stepPx (the 1:1 scroll math) reads that step, not this.
-	const TAIL_TRIM_DESKTOP = "55vh";
+	// Now applied on BOTH breakpoints, unlike the two-step version. Mobile used to
+	// need the full runway for the lead note to finish scrolling out; step 3 gives
+	// it 780px to do that long before the end, so the runway became dead scroll
+	// there too (measured 1.04 viewports of it).
+	//
+	// 30vh lands both breakpoints at ~0.49 viewports of hold after the morph
+	// finishes — enough to read the final chart without stalling. Measured:
+	// desktop 215px → 440px, mobile 813px → 384px. Raise to trim more; 0vh
+	// restores the original tail.
+	//
+	// Does NOT touch pacing — ANIM_STEP_PADDING / MORPH_STEP_PADDING are the
+	// animations' own scroll lengths, and stepPx (the 1:1 note math) reads the
+	// chart step, not this.
+	const TAIL_TRIM = "30vh";
 
 	// ── Progressive y-gridlines (fade in as the data grows tall enough) ──────────
 	// Generated from the domain, not hand-listed, so a unit change can't leave the
@@ -195,6 +262,10 @@
 		copy?.story?.find((d: { name: string }) => d.name === name)?.text ?? "";
 	let introText = $derived(storyCopy("us"));
 	let leadText = $derived(storyCopy("australia"));
+	// NB: the ArchieML block is named "raw", not "absolute" — that is what the
+	// Google Doc actually produced. A mismatch here fails silently (storyCopy
+	// returns ""), so the note markup is guarded on the text being non-empty.
+	let rawText = $derived(storyCopy("raw"));
 
 	// ── Scroll wiring ───────────────────────────────────────────────────────────
 	// ScrolloSteps reports the active step index and a 0→1 progress within it.
@@ -292,6 +363,31 @@
 	let p = $derived(reveal.current);
 
 	const clamp = (v: number) => Math.min(1, Math.max(0, v));
+
+	// ── Step 3 progress (`q`) ───────────────────────────────────────────────────
+	// A PARALLEL derivation, not an extension of `target`. `p` has to stay pinned
+	// at 1 once the reveal finishes — clip(), decorationFade, endFade, crossFade,
+	// dotGrow and the intro→lead note handoff all depend on that — so step 3 gets
+	// its own 0→1 instead.
+	//
+	// Continuity: the instant `step` flips to MORPH_STEP, `stepProgress` is 0, so
+	// `morphTarget` is 0 too. No seam, and it reverses cleanly on scroll-up.
+	const MORPH_STEP = 2;
+	let morphTarget = $derived.by(() => {
+		if (step == null || step < MORPH_STEP) return 0;
+		if (step > MORPH_STEP) return 1;
+		return stepProgress ?? 0;
+	});
+	const morph = new Tween(0, { duration: MORPH_TWEEN_MS, easing: cubicOut });
+	$effect(() => {
+		morph.target = morphTarget;
+	});
+	// cubicInOut, not linear: the whole "who leads" band reversal happens in the
+	// first half of q (2017 flips at q≈0.08, 2025 at q≈0.46), so easing the start
+	// gives that sweep room to read instead of firing off immediately.
+	let q = $derived(
+		cubicInOut(clamp((morph.current - MORPH_START) / (MORPH_END - MORPH_START)))
+	);
 
 	// Chart decoration (axes, labels, grid) stays hidden until the reveal reaches
 	// `FADE_START` — letting the lines grow a little first — then fades in, fully
@@ -421,7 +517,9 @@
 	let introOpacity = $derived(
 		1 - clamp((introTravelled - (1 - INTRO_EXIT_FADE)) / INTRO_EXIT_FADE)
 	);
-	let leadOpacity = $derived(clamp((p - CROSS_REVEAL) / CROSS_FADE_SPAN));
+	// The lead note's arrival fade. Its desktop EXIT fade is applied further down
+	// (it depends on step 3, which isn't derived yet at this point).
+	let leadArrival = $derived(clamp((p - CROSS_REVEAL) / CROSS_FADE_SPAN));
 	let introShift = $derived(-introTravelled * introTravel); // up and out
 
 	// ── Lead-note "keep scrolling" mode (mobile) ────────────────────────────────
@@ -439,10 +537,86 @@
 	// it keeps going for as long as the reader keeps scrolling.
 	let handoffScrollY = $derived(stepTopPx + CROSS_REVEAL * stepPx - triggerPx);
 	let scrolledSinceHandoff = $derived(Math.max(0, scrollY - handoffScrollY));
+
+	// ── Step 3's note ("raw numbers") ───────────────────────────────────────────
+	// Note 3 PARKS on both breakpoints: it's the last thing in the story, so
+	// "keep scrolling" would only strand it mid-frame at max scroll. That's why it
+	// needs no handoffScrollY analogue — the single biggest simplification here.
+	//
+	// Its own step measurement, deliberately a separate effect rather than a
+	// parameterised version of the stepPx one: that effect is load-bearing for the
+	// reveal's 1:1 math and handoffScrollY, and isn't worth the regression risk.
+	const NOTE3_SHIFT = LEAD_SHIFT;
+	const NOTE3_START_DESKTOP = 0.1;
+	// Mobile waits: the lead note is only ~45px past its resting spot when step 3
+	// begins and is still scrolling out through the first part of the morph.
+	const NOTE3_START_MOBILE = 0.45;
+	let note3Start = $derived(isMobile ? NOTE3_START_MOBILE : NOTE3_START_DESKTOP);
+	let morphStepPx = $state(0);
+
+	$effect(() => {
+		const el = overlayEl?.querySelector<HTMLElement>(
+			`.step:nth-child(${MORPH_STEP + 1})`
+		);
+		if (!el) return;
+		void winH;
+		void width;
+		const measure = () => (morphStepPx = el.offsetHeight);
+		measure();
+		const ro = new ResizeObserver(measure);
+		ro.observe(el);
+		return () => ro.disconnect();
+	});
+
+	const morphSpan = (px: number) => (morphStepPx > 0 ? px / morphStepPx : SPAN_FALLBACK);
+	let note3Travel = $derived(
+		morphStepPx > 0
+			? Math.min(NOTE3_SHIFT, (ARRIVE_BY - note3Start) * morphStepPx)
+			: NOTE3_SHIFT
+	);
+	let note3Travelled = $derived(
+		clamp((morphTarget - note3Start) / morphSpan(note3Travel))
+	);
+	let note3Shift = $derived((1 - note3Travelled) * note3Travel);
+	let note3Opacity = $derived(clamp((morphTarget - note3Start) / CROSS_FADE_SPAN));
+
+	// Desktop lead note has to LEAVE now — it parks forever, and would otherwise
+	// sit over the absolute chart still asserting the per-capita conclusion.
+	// Mobile needs nothing: its leadShift is unbounded and already scrolling out.
+	// Reuses introExitPx as the exit distance — both notes sit at top: 12% with the
+	// same width and line-height, so they differ by at most a line, and the
+	// trailing INTRO_EXIT_FADE absorbs any under-travel.
+	let leadExitTravel = $derived(
+		morphStepPx > 0
+			? Math.min(
+					introExitPx > 0 ? introExitPx : NOTE_SHIFT_FALLBACK,
+					ARRIVE_BY * morphStepPx
+				)
+			: NOTE_SHIFT_FALLBACK
+	);
+	let leadExited = $derived(clamp(morphTarget / morphSpan(leadExitTravel)));
+
 	let leadShift = $derived(
 		isMobile
 			? leadTravel - scrolledSinceHandoff // rises in, then keeps going (negative)
-			: (1 - leadTravelled) * leadTravel // rises in, then parks at 0
+			: (1 - leadTravelled) * leadTravel - leadExited * leadExitTravel // parks, then exits
+	);
+	// Mobile needs its own exit fade. The lead note rests at the BOTTOM of the
+	// frame there, so scrolling out takes a full frame height (~730px) — measured,
+	// it is still fully on screen when note 3 arrives, and the two cards stack
+	// into a wall of text over the chart. Fading it against morphTarget clears
+	// that without touching the 1:1 motion: it finishes exactly as note 3 starts
+	// its rise. Desktop fades on its own travel instead (it has already parked).
+	const LEAD_FADE_MOBILE_START = 0.28;
+	let leadOpacity = $derived(
+		leadArrival *
+			(isMobile
+				? 1 -
+					clamp(
+						(morphTarget - LEAD_FADE_MOBILE_START) /
+							(note3Start - LEAD_FADE_MOBILE_START)
+					)
+				: 1 - clamp((leadExited - (1 - INTRO_EXIT_FADE)) / INTRO_EXIT_FADE))
 	);
 
 	// Reveal the series left→right: keep points up to the moving cutoff year and
@@ -477,10 +651,42 @@
 		visible.length > 1 && visible[visible.length - 1].year > visible[0].year
 	);
 
+	// ── The morph: per-capita → absolute counts ─────────────────────────────────
+	// A pure per-series LINEAR RESCALE, so there is no second dataset and no
+	// domain animation. count = rate × (POP/PER), and one count unit is
+	// (Y_MAX / Y_MAX_COUNT) axis units, so the entire transition collapses to one
+	// multiplier per series.
+	//
+	// The <Plot> y-domain stays [0, Y_MAX] throughout. SveltePlot short-circuits
+	// data extent when given an explicit domain, so the frame, margins and
+	// gridline POSITIONS are fixed by construction — only the values move.
+	const US_GAIN = (POP.us / PER) * (Y_MAX / Y_MAX_COUNT); // ≈ 1.6745
+	const AU_GAIN = (POP.au / PER) * (Y_MAX / Y_MAX_COUNT); // ≈ 0.1332
+	let usK = $derived(lerp(1, US_GAIN, q));
+	let auK = $derived(lerp(1, AU_GAIN, q));
+	// Field names stay usRate/auRate so not a single mark binding changes — only
+	// which array they read. At q === 0 this returns `visible` ITSELF, so the
+	// whole reveal phase allocates nothing extra and re-renders exactly as before.
+	let plotRows = $derived(
+		q === 0
+			? visible
+			: visible.map((d) => ({
+					year: d.year,
+					usRate: d.usRate * usK,
+					auRate: d.auRate * auK
+				}))
+	);
+	let plotHead = $derived(plotRows.length ? plotRows[plotRows.length - 1] : null);
+
 	// Largest value drawn so far → which gridlines are "needed" yet. Non-decreasing
 	// because `visible` always spans from 2000 to the moving cutoff.
+	//
+	// Reads `visible` (rate space), NOT `plotRows` — so the morph is invisible to
+	// it and the gridlines can't fade back out when the plotted values shrink. The
+	// `p >= 1` short-circuit makes that explicit rather than incidental: once the
+	// reveal is done every gridline is needed and stays needed.
 	let maxVisible = $derived(
-		visible.reduce((m, d) => Math.max(m, d.usRate, d.auRate), 0)
+		p >= 1 ? Y_MAX : visible.reduce((m, d) => Math.max(m, d.usRate, d.auRate), 0)
 	);
 	const tickReveal = (t: number) =>
 		Math.min(1, Math.max(0, (maxVisible - t + TICK_LEAD) / TICK_FADE_SPAN));
@@ -490,10 +696,29 @@
 		decorationFade * (t >= Y_MAX ? endFade : tickReveal(t));
 
 	// Year dots (one per line per year); they grow in together at the very end,
-	// radius = DOT_R * endFade. Positions are static.
+	// radius = DOT_R * dotGrow. Static during the reveal (hence the one-shot
+	// tween), but they have to ride the morph, so they follow usK/auK once q > 0.
 	let yearDots = $derived(
-		data.map((d) => ({ year: d.year, us: d.usRate, au: d.auRate }))
+		q === 0
+			? data.map((d) => ({ year: d.year, us: d.usRate, au: d.auRate }))
+			: data.map((d) => ({ year: d.year, us: d.usRate * usK, au: d.auRate * auK }))
 	);
+
+	// ── Axis relabelling ────────────────────────────────────────────────────────
+	// A V: both tick sets fade to nothing at LABEL_SWAP_AT, so the axis never
+	// shows two conflicting scales at once and there is no hard pop.
+	let labelFade = $derived(clamp(Math.abs(q - LABEL_SWAP_AT) / LABEL_FADE_SPAN));
+	let showCounts = $derived(q >= LABEL_SWAP_AT);
+	let yLabel = $derived(
+		showCounts ? Y_LABEL_COUNT : `Phase 1 trials per ${PER_LABEL} residents ↑`
+	);
+	// Rate ticks own the axis before the swap, count ticks after it.
+	let rateTickFade = $derived(showCounts ? 0 : labelFade);
+	let countTickFade = $derived(showCounts ? labelFade : 0);
+
+	// The 2016 callout is a claim about the per-capita chart, so it leaves at the
+	// very top of the morph — before the crossing it annotates starts sweeping.
+	let calloutFade = $derived(crossFade * (1 - clamp(q / CROSS_EXIT_SPAN)));
 </script>
 
 <!-- Read-only: drives the mobile lead note's post-arrival scroll (see leadShift). -->
@@ -542,7 +767,10 @@
 					<span class="legend-item">
 						<i class="swatch" style:background={US_FILL}></i>U.S. leads
 					</span>
-					<span class="legend-item">
+					<!-- Fades out with the morph: by q ≈ 0.46 the blue band has been
+					     erased entirely (the U.S. leads every year in absolute terms), so
+					     leaving this swatch up would label a band that isn't there. -->
+					<span class="legend-item" style:opacity={1 - q}>
 						<i class="swatch" style:background={AU_FILL}></i>Australia leads
 					</span>
 				</div>
@@ -557,7 +785,7 @@
 					<Plot
 						width={chartWidth}
 						height={chartHeight}
-						marginLeft={isMobile ? 30 : 50}
+						marginLeft={isMobile ? 34 : 50}
 						marginRight={isMobile ? 60 : 80}
 						x={{
 							domain: [X0, X1],
@@ -568,7 +796,7 @@
 						y={{
 							domain: [0, Y_MAX],
 							grid: false,
-							label: `Phase 1 trials per ${PER_LABEL} residents ↑`,
+							label: yLabel,
 							ticks: Y_TICKS
 						}}
 					>
@@ -584,7 +812,7 @@
 								stroke={{ value: AXIS_MUTED, scale: null }}
 								strokeWidth={1}
 								strokeOpacity={0.15}
-								opacity={tickOpacity(t)}
+								opacity={tickOpacity(t) * rateTickFade}
 							/>
 							<!-- Tick number, faded in tandem with its gridline (implicit axis
 							     numbers hidden via CSS). -->
@@ -596,9 +824,36 @@
 								fill={{ value: AXIS_MUTED, scale: null }}
 								textAnchor="end"
 								dx={-8}
-								opacity={AXIS_TEXT_OP * tickOpacity(t)}
+								opacity={AXIS_TEXT_OP * tickOpacity(t) * rateTickFade}
 							/>
 						{/each}
+						<!-- Absolute-count gridlines. Same shape as the rate ticks above but a
+						     sparser set (0/500/1k/1.5k/2k), with axis positions precomputed into
+						     the fixed [0, Y_MAX] frame. Only mounted once the morph starts, so
+						     the reveal phase renders exactly as before. -->
+						{#if q > 0}
+							{#each COUNT_TICKS as ct (ct.y)}
+								<Line
+									data={[{ x: X0, y: ct.y }, { x: X1, y: ct.y }]}
+									x="x"
+									y="y"
+									stroke={{ value: AXIS_MUTED, scale: null }}
+									strokeWidth={1}
+									strokeOpacity={0.15}
+									opacity={decorationFade * countTickFade}
+								/>
+								<Text
+									data={[{ x: X0, y: ct.y }]}
+									x="x"
+									y="y"
+									text={ct.label}
+									fill={{ value: AXIS_MUTED, scale: null }}
+									textAnchor="end"
+									dx={-8}
+									opacity={AXIS_TEXT_OP * decorationFade * countTickFade}
+								/>
+							{/each}
+						{/if}
 						<!-- Invisible full-range anchor: keeps the scales and measured
 						     plot width stable while the visible data is still empty/collapsed
 						     (otherwise a zero-width reveal yields NaN geometry). -->
@@ -620,7 +875,7 @@
 							     number won't do it. The legend swatches use the raw constants
 							     for the same reason. -->
 							<DifferenceY
-								data={visible}
+								data={plotRows}
 								x="year"
 								y2="usRate"
 								y1="auRate"
@@ -631,7 +886,7 @@
 								<!-- fillOpacity={0.32} -->
 							<!-- Both series as lines. `scale: null` keeps the literal colours. -->
 							<Line
-								data={visible}
+								data={plotRows}
 								x="year"
 								y="auRate"
 								stroke={{ value: AU_COLOR, scale: null }}
@@ -639,7 +894,7 @@
 								curve={CURVE}
 							/>
 							<Line
-								data={visible}
+								data={plotRows}
 								x="year"
 								y="usRate"
 								stroke={{ value: US_COLOR, scale: null }}
@@ -660,7 +915,7 @@
 							     just below (lineAnchor top), so they stay clear of each other at the
 							     crossover but read as attached to the line ends. -->
 							<Text
-								data={[head]}
+								data={[plotHead]}
 								x="year"
 								y="usRate"
 								text="U.S. 🇺🇸"
@@ -672,7 +927,7 @@
 								dy={-2}
 							/>
 							<Text
-								data={[head]}
+								data={[plotHead]}
 								x="year"
 								y="auRate"
 								text={isMobile ? "Aus. 🇦🇺" : "Australia 🇦🇺"}
@@ -684,7 +939,7 @@
 								dy={2}
 							/>
 						{/if}
-						{#if crossFade > 0}
+						{#if calloutFade > 0}
 							<!-- 2016 crossover callout. Leader line + dot + text, all in chart
 							     coords so they stay anchored to the data point. Fades in quickly
 							     once the reveal scrubs past ~2016 (crossFade). -->
@@ -694,7 +949,7 @@
 								y="value"
 								stroke={{ value: AXIS_MUTED, scale: null }}
 								strokeWidth={1}
-								opacity={crossFade * 0.6}
+								opacity={calloutFade * 0.6}
 							/>
 							<Dot
 								data={[CROSS]}
@@ -702,7 +957,7 @@
 								y="value"
 								r={3.5}
 								fill={{ value: AXIS_MUTED, scale: null }}
-								opacity={crossFade}
+								opacity={calloutFade}
 							/>
 							<!-- Desktop: text hangs BELOW its anchor (leader leaves upward-left).
 							     Mobile: the label sits upper-left, so the text must sit ABOVE its
@@ -717,7 +972,7 @@
 								textAnchor="middle"
 								lineAnchor={isMobile ? "bottom" : "top"}
 								dy={isMobile ? -6 : 6}
-								opacity={crossFade}
+								opacity={calloutFade}
 							/>
 						{/if}
 					</Plot>
@@ -746,6 +1001,21 @@
 			>
 				{@html leadText}
 			</p>
+
+			<!-- "Raw numbers" note (the 3rd step's copy). Same 1:1 rise as the lead
+			     note, but parks on BOTH breakpoints — it's the last thing in the
+			     story, so keep-scrolling would strand it mid-frame at max scroll.
+			     Guarded on the text: the ArchieML block is named "raw", and a name
+			     mismatch would otherwise render an empty white card on mobile. -->
+			{#if rawText}
+				<p
+					class="raw-note"
+					style:opacity={note3Opacity}
+					style:--note-shift={`${note3Shift}px`}
+				>
+					{@html rawText}
+				</p>
+			{/if}
 		</div>
 	</div>
 
@@ -758,7 +1028,8 @@
 		class:hide-step-boxes={!SHOW_STEP_BOXES}
 		style:margin-top={`calc(-1 * (100vh - ${headerH}px - ${footerH}px))`}
 		style:--anim-step-pad={ANIM_STEP_PADDING}
-		style:--scrollo-container-trim={isMobile ? "0px" : TAIL_TRIM_DESKTOP}
+		style:--morph-step-pad={MORPH_STEP_PADDING}
+		style:--scrollo-container-trim={TAIL_TRIM}
 	>
 		<ScrolloSteps
 			bind:step
@@ -769,14 +1040,6 @@
 		/>
 	</div>
 
-	<!-- Exit runway for the mobile lead note's "keep scrolling" mode. To clear the
-	     top of the frame it needs leadTravel + one frame height of scroll after the
-	     crossover; measured, the story ran out ~105px short and the paragraph froze
-	     half-out across the chart at max scroll. Sits inside .scrollo-story so it
-	     extends the sticky region, not just the page. Zero-height on desktop, where
-	     the note parks and this would only add dead scroll.
-	     Part of the keep-scrolling experiment — delete with it. -->
-	<div class="lead-exit-runway"></div>
 
 	<!-- uncomment below to pull directly from gdoc on page reload -->
 	<RefreshCopy docId={DOC_ID} bind:data={copy} />
@@ -865,7 +1128,8 @@
 	   share style AND position; they hand off with a scroll transition at the
 	   crossover (translateY via --note-shift, set inline). */
 	.intro-note,
-	.lead-note {
+	.lead-note,
+	.raw-note {
 		position: absolute;
 		top: 12%;
 		left: 50%;
@@ -891,13 +1155,15 @@
 	   .intro-note / .lead-note prefixes still scope the effect to these two notes
 	   rather than leaking the classes page-wide. */
 	.intro-note :global(.us),
-	.lead-note :global(.us) {
+	.lead-note :global(.us),
+	.raw-note :global(.us) {
 		color: var(--us-color);
 		font-weight: 600;
 	}
 
 	.intro-note :global(.au),
-	.lead-note :global(.au) {
+	.lead-note :global(.au),
+	.raw-note :global(.au) {
 		color: var(--au-color);
 		font-weight: 600;
 	}
@@ -915,7 +1181,8 @@
 	   background can drop from 0.9 to ScrolloSteps' lighter 0.75. */
 	@media (max-width: 768px) {
 		.intro-note,
-		.lead-note {
+		.lead-note,
+		.raw-note {
 			width: 88%;
 			/* ScrolloSteps' MOBILE padding (`--scrollo-text-padding-mobile`), not its
 			   desktop `1rem` — a tight 0.1rem top/bottom so the card hugs the prose
@@ -949,17 +1216,6 @@
 		}
 	}
 
-	/* See the note in the markup — scroll room for the mobile lead note to finish
-	   leaving the frame. */
-	.lead-exit-runway {
-		height: 0;
-	}
-
-	@media (max-width: 768px) {
-		.lead-exit-runway {
-			height: 25vh;
-		}
-	}
 
 	/* Foreground scrolly column sits above the sticky chart. pointer-events are
 	   re-enabled on the step text itself inside ScrolloSteps. */
@@ -981,6 +1237,13 @@
 	   the reveal is spread over more scrolling. Controlled by --anim-step-pad. */
 	.foreground-overlay :global(.step:nth-child(2)) {
 		padding-bottom: var(--anim-step-pad, 60vh);
+	}
+
+	/* Scroll length of the 3rd step, which drives the per-capita → absolute morph.
+	   Needs its own rule: the selector above is a literal :nth-child(2), so without
+	   this the new step would silently fall back to ScrolloSteps' 60vh default. */
+	.foreground-overlay :global(.step:nth-child(3)) {
+		padding-bottom: var(--morph-step-pad, 60vh);
 	}
 
 	/* Colour the series names in the step copy to match the lines. */
