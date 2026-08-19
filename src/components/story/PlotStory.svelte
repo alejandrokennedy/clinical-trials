@@ -2,10 +2,20 @@
 	import "$styles/plot.css";
 	import { footerState } from "$utils/footerState.svelte";
 	import { MOBILE_BREAKPOINT, FOOTER_H, headerHeight } from "$utils/chrome";
-	import { Plot, DifferenceY, Line, Text, Dot, HTMLTooltip } from "svelteplot";
+	import {
+		Plot,
+		DifferenceY,
+		AreaY,
+		Line,
+		Text,
+		Dot,
+		HTMLTooltip
+	} from "svelteplot";
 	import AnchoredTooltip from "$components/helpers/tooltip/AnchoredTooltip.svelte";
 	import ScrolloSteps from "$components/helpers/ScrolloSteps.svelte";
 	import chapters from "$data/plotStorySteps.json";
+	import csv from "$data/australiaPhase1Trials.csv";
+	import sponsorCsv from "$data/australiaSponsorCountry.csv";
 	import { Tween } from "svelte/motion";
 	import { cubicOut, cubicInOut } from "svelte/easing";
 	import RefreshCopy from "$components/helpers/RefreshCopy.svelte";
@@ -70,10 +80,16 @@
 	});
 
 	// ── Data ──────────────────────────────────────────────────────────────────
-	// Phase 1 clinical-trial counts by start year (ClinicalTrials.gov extract),
-	// normalized to trials per PER residents. Mirrors the Observable notebook
-	// (cell 8): reference resident populations, then count / (pop / PER).
-	const POP = { us: 334_900_000, au: 26_640_000 };
+	// Phase 1 clinical-trial counts by start year, normalized to trials per PER
+	// residents: count / (pop / PER). Read straight from the source sheet
+	// (`preliminary-data/Australia phase 1 trials data-2.xlsx`, tab 1, copied to
+	// src/data) rather than re-keyed here, so there is one copy of the numbers.
+	//   • Australia = clinicaltrials.gov + ANZCTR ("Total AUS trials").
+	//   • Populations are PER YEAR, not fixed reference figures.
+	//     Source: United Nations World Population Prospects, 2024.
+	// The sheet's own per-million columns are ignored — they're computed from the
+	// same counts and populations, and deriving them here keeps PER as the single
+	// place the denominator lives (see below).
 
 	// ── Rate unit ─────────────────────────────────────────────────────────────
 	// The ONE place the denominator lives. Everything downstream is derived from
@@ -83,42 +99,102 @@
 	const PER = 1e6;
 	const PER_LABEL = "million";
 
-	// [startYear, usCount, auCount]
-	// The grid layout is the point here — one row per line buries the shape.
-	// prettier-ignore
-	const counts: [number, number, number][] = [
-		[2000, 283, 6], [2001, 312, 3], [2002, 398, 6], [2003, 500, 5],
-		[2004, 665, 8], [2005, 785, 32], [2006, 973, 31], [2007, 1106, 40],
-		[2008, 1213, 47], [2009, 1300, 52], [2010, 1316, 68], [2011, 1345, 55],
-		[2012, 1249, 59], [2013, 1310, 74], [2014, 1435, 60], [2015, 1364, 87],
-		[2016, 1349, 91], [2017, 1407, 127], [2018, 1439, 126], [2019, 1472, 146],
-		[2020, 1420, 198], [2021, 1578, 222], [2022, 1492, 240], [2023, 1410, 198],
-		[2024, 1375, 256], [2025, 1369, 238]
-	];
+	// One column name per value we need. Spelled out because the sheet's headers
+	// are prose ("USA trials (imported from other spreadsheet)") — a typo here is
+	// a NaN in the chart, so they're named once and used once.
+	const COL = {
+		year: "Year",
+		usCount: "USA trials (imported from other spreadsheet)",
+		auCount: "Total AUS trials",
+		usPop: "USA population per year",
+		auPop: "Aus population per year"
+	} as const;
 
 	// Field names are deliberately unit-NEUTRAL (`usRate`, not `usPer100k`) so a
 	// change of denominator doesn't ripple through every mark in the markup.
-	// usCount/auCount ride along for the tooltip, which reports BOTH framings. They
-	// are not plotted, and clip() drops them — that's fine, the tooltip reads this
-	// array (all years, static), never the clipped/morphed one.
-	const data = counts.map(([year, us, au]) => ({
-		year,
-		usRate: us / (POP.us / PER),
-		auRate: au / (POP.au / PER),
-		usCount: us,
-		auCount: au
-	}));
+	// usCount/auCount ride along for the tooltip, which reports BOTH framings.
+	// usPop/auPop ride along for the morph, which needs each year's own divisor.
+	// None of the three are plotted.
+	const data = csv.map((r) => {
+		const usCount = +r[COL.usCount];
+		const auCount = +r[COL.auCount];
+		const usPop = +r[COL.usPop];
+		const auPop = +r[COL.auPop];
+		return {
+			year: +r[COL.year],
+			usRate: usCount / (usPop / PER),
+			auRate: auCount / (auPop / PER),
+			usCount,
+			auCount,
+			usPop,
+			auPop
+		};
+	});
 
-	// What actually gets drawn: year + the two plotted values, no raw counts.
-	type PlotRow = { year: number; usRate: number; auRate: number };
+	// ── Sponsor breakdown (steps 4–5) ───────────────────────────────────────────
+	// The Australian total split by the SPONSOR's country — same workbook, tab 3
+	// ("Aus trials per country per year"), pasted the same way. The sheet has
+	// already bucketed sponsors into these four, so this is the whole breakdown,
+	// not a top-3-plus-rest computed here.
+	//
+	// The four bands SUM to auCount, year by year (verified against the workbook),
+	// which is the property the whole step rests on: the top of the stack IS the
+	// Australia line, so the line needs no adjustment when the fill arrives.
+	// Bottom-to-top stacking order; the colours below ride in the same order.
+	const SPONSORS = ["Australia", "United States", "China", "Other"];
+	// Interim palette, carried over from the notebook prototype: Australia and the
+	// U.S. keep the hues they already have as lines. The final stacked-area
+	// palette — and the legend swap that goes with it — is still open.
+	const SPONSOR_COLORS = ["#4575b4", "#d73027", "#8c62aa", "#2a9d8f"];
+	// Excel's pivot header for the year column, kept verbatim rather than renamed
+	// in the CSV, so the file stays a straight paste of the sheet.
+	const SPONSOR_YEAR = "Row Labels";
+
+	// Cumulative band edges IN COUNTS — [c0, c1] per (year, sponsor). A blank cell
+	// is a year with no trials from that country, not a gap: an area chart cannot
+	// have holes, so it reads as 0. Kept in counts, not axis units, because the
+	// axis scale is animated (see `axisPerCount`).
+	const bands = sponsorCsv
+		.filter((r) => /^\d{4}$/.test((r[SPONSOR_YEAR] ?? "").trim()))
+		.flatMap((r) => {
+			let acc = 0;
+			return SPONSORS.map((sponsor) => {
+				const c0 = acc;
+				acc += +(r[sponsor] || 0);
+				return { year: +r[SPONSOR_YEAR], sponsor, c0, c1: acc };
+			});
+		});
+
+	// The stack landing on the line is an invariant across two separate files, and
+	// it fails SILENTLY — the bands just stop reaching the line. So check it once.
+	if (import.meta.env.DEV) {
+		const total = new Map(bands.map((b) => [b.year, b.c1]));
+		const off = data.filter((d) => total.get(d.year) !== d.auCount);
+		if (off.length)
+			console.warn(
+				"[PlotStory] sponsor bands do not sum to the Australian total:",
+				off.map((d) => `${d.year}: ${total.get(d.year)} vs ${d.auCount}`)
+			);
+	}
+
+	// What actually gets drawn: year + the two plotted values, plus the two
+	// populations, which the morph needs per row (counts stay behind for the
+	// tooltip, which reads `data` — never the clipped/morphed array).
+	type PlotRow = {
+		year: number;
+		usRate: number;
+		auRate: number;
+		usPop: number;
+		auPop: number;
+	};
 
 	// Fixed scales so the frame stays put while the lines grow into it.
 	const X0 = data[0].year;
 	const X1 = data[data.length - 1].year;
 
 	// Round the domain up to a clean tick above the tallest series, rather than
-	// hardcoding it: at /million Australia peaks at ~9.61 in 2024, so this lands
-	// on 10. Y_TICK_STEP is the gridline interval.
+	// hardcoding it: at /million Australia peaks at ~13.66 in 2024, so this lands
+	// on 14. Y_TICK_STEP is the gridline interval.
 	const Y_TICK_STEP = PER / 1e6; // 1 per million; 0.1 per 100k — same tick count
 	const PEAK = Math.max(...data.map((d) => Math.max(d.usRate, d.auRate)));
 	const Y_MAX = Math.ceil(PEAK / Y_TICK_STEP) * Y_TICK_STEP;
@@ -137,16 +213,24 @@
 	const Y_MAX_COUNT = 1750;
 	const COUNT_TICK_STEP = 250;
 
-	// Carried in AXIS units so they drop straight into the fixed [0, Y_MAX] frame.
+	// ── Step 4 axis: Australia alone ────────────────────────────────────────────
+	// The zoom target. Australia peaks at 365 (2024), which lands at 91% of a 400
+	// axis — the same headroom the U.S. peak has on 1750 (90%), so the two count
+	// frames are cropped alike. 50 gives eight gridlines above the baseline.
+	const Y_MAX_COUNT_AU = 400;
+	const AU_COUNT_TICK_STEP = 50;
+
+	// Both count tick sets are carried as COUNTS, not axis positions: step 4
+	// animates the axis units per count, so their y has to be resolved per frame
+	// (see `axisPerCount`) or the numbers would sit still while the data zoomed.
 	// toFixed(2) not (1): at quarter steps 1250 would round to "1.3k". The unary +
 	// then strips the trailing zeros again, so 1000 → "1k", 1500 → "1.5k".
-	const COUNT_TICKS = Array.from(
-		{ length: Math.round(Y_MAX_COUNT / COUNT_TICK_STEP) + 1 },
-		(_, i) => i * COUNT_TICK_STEP
-	).map((v) => ({
-		y: (v / Y_MAX_COUNT) * Y_MAX,
-		label: v >= 1000 ? `${+(v / 1000).toFixed(2)}k` : String(v)
-	}));
+	const countLabel = (v: number) =>
+		v >= 1000 ? `${+(v / 1000).toFixed(2)}k` : String(v);
+	const ticksTo = (max: number, step: number) =>
+		Array.from({ length: Math.round(max / step) + 1 }, (_, i) => i * step);
+	const COUNT_TICKS = ticksTo(Y_MAX_COUNT, COUNT_TICK_STEP);
+	const AU_COUNT_TICKS = ticksTo(Y_MAX_COUNT_AU, AU_COUNT_TICK_STEP);
 
 	// Series colours (strong line + label colours; the fill uses the muted
 	// RdYlBu scheme underneath). Passed with `scale: null` so SveltePlot uses
@@ -177,6 +261,10 @@
 	// Scroll length of the 3rd step, which morphs the chart from per-capita rates
 	// to absolute counts.
 	const MORPH_STEP_PADDING = "100vh";
+	// Scroll length of the 4th step (zoom onto Australia) and the 5th (the sponsor
+	// stack fading in band by band).
+	const ZOOM_STEP_PADDING = "100vh";
+	const STACK_STEP_PADDING = "100vh";
 	// When note 3 starts rising, as a fraction of step 3's progress. Mobile waits:
 	// the lead note is only ~45px past its resting spot when step 3 begins and is
 	// still scrolling out of the top, so note 3 holds off until it has cleared.
@@ -185,6 +273,11 @@
 	let note3Start = $derived(
 		isMobile ? NOTE3_START_MOBILE : NOTE3_START_DESKTOP
 	);
+	// Notes 4 and 5 arrive the same way, and mobile waits for the same reason: the
+	// note before it is still scrolling out of the top of the frame.
+	const NOTE_START_DESKTOP = 0.1;
+	const NOTE_START_MOBILE = 0.35;
+	let noteStart = $derived(isMobile ? NOTE_START_MOBILE : NOTE_START_DESKTOP);
 
 	// The morph's window INSIDE that step, as 0→1 fractions of its progress.
 	// START is keyed to note 3's arrival rather than being a fixed number, so the
@@ -213,12 +306,47 @@
 	// Both tick sets are invisible at the swap, so there is never a double grid.
 	const LABEL_SWAP_AT = 0.5;
 	const LABEL_FADE_SPAN = 0.18;
-	// How fast the 2016 crossover callout leaves once the morph starts. It is a
+	// ── Step 4: the zoom onto Australia ─────────────────────────────────────────
+	// The U.S. line and the difference band leave FIRST, over the opening
+	// US_EXIT_SPAN of the step, and the zoom only starts once they are gone. That
+	// ordering isn't taste: on a 400-count axis the U.S. peak (1,578) sits nearly
+	// 4× above the frame, and it crosses the top rail about 3% into the zoom — far
+	// too soon for any fade running alongside to finish first.
+	const US_EXIT_SPAN = 0.18;
+	const ZOOM_END = 0.92;
+	// Same guard as MORPH_MIN_SPAN: keep the window from collapsing on mobile,
+	// where the note arrives late and the zoom has less of the step left.
+	const ZOOM_MIN_SPAN = 0.2;
+	// The zoom cannot start before the U.S. is gone OR before the note explaining
+	// it has landed, whichever is later.
+	let zoomStart = $derived(
+		Math.min(Math.max(US_EXIT_SPAN, noteStart), ZOOM_END - ZOOM_MIN_SPAN)
+	);
+	// Where the count ticks change meaning (1,750 frame → 400 frame), as a
+	// fraction of the zoom, and the fade either side. Same V as LABEL_SWAP_AT:
+	// both sets pass through zero, so the axis never carries two scales at once.
+	const ZOOM_LABEL_SWAP_AT = 0.45;
+	const ZOOM_LABEL_FADE_SPAN = 0.2;
+
+	// ── Step 5: the sponsor stack ───────────────────────────────────────────────
+	// The bands fade in from the bottom up, one every BAND_STAGGER of the step.
+	// Only OPACITY animates — every band is drawn at its final stacked position
+	// throughout, so the reveal reads as the area filling up from the baseline
+	// rather than four shapes sliding around.
+	const BAND_STAGGER = 0.12;
+	const BAND_FADE_SPAN = 0.22;
+	const STACK_END = 0.85;
+	const STACK_MIN_SPAN = 0.3;
+	let stackStart = $derived(Math.min(noteStart, STACK_END - STACK_MIN_SPAN));
+
+	// How fast the 2014 crossover callout leaves once the morph starts. It is a
 	// claim about the PER-CAPITA chart, and the crossing it points at begins
 	// sweeping right at q ≈ 0.08, so it has to be gone early.
 	const CROSS_EXIT_SPAN = 0.15;
-	// Axis title once the chart is showing absolute counts.
+	// Axis title once the chart is showing absolute counts, and again once it has
+	// zoomed onto Australia alone.
 	const Y_LABEL_COUNT = "Phase 1 trials started ↑";
+	const Y_LABEL_COUNT_AU = "Phase 1 trials started in Australia ↑";
 	// How much of Scrollo's trailing runway to reclaim. That runway
 	// (.scrollyContainer's padding-bottom, 100vh) is scroll where the chart is
 	// still pinned but nothing is animating.
@@ -297,6 +425,10 @@
 	// Google Doc actually produced. A mismatch here fails silently (storyCopy
 	// returns ""), so the note markup is guarded on the text being non-empty.
 	let rawText = $derived(storyCopy("raw"));
+	// Steps 4 and 5. Guarded in the markup the same way `raw` is — a renamed block
+	// in the Google Doc turns into an empty white card on mobile, not an error.
+	let zoomText = $derived(storyCopy("zoom"));
+	let stackText = $derived(storyCopy("stack"));
 
 	// ── Scroll wiring ───────────────────────────────────────────────────────────
 	// ScrolloSteps reports the active step index and a 0→1 progress within it.
@@ -304,12 +436,19 @@
 	let stepProgress = $state<number | null | undefined>(undefined);
 
 	// chapters[0] = intro (chart empty), chapters[1] = scrub through time,
-	// chapters[2] = morph to absolute counts.
+	// chapters[2] = morph to absolute counts, chapters[3] = zoom onto Australia,
+	// chapters[4] = fade in the sponsor stack.
 	// NB: these indices are ALSO hardcoded as :nth-child literals in the style
 	// block (a step's scroll length is CSS). Reorder or insert a step and both
 	// must change together — nothing errors if they diverge, the wrong step just
 	// gets the wrong scroll length, which only shows up as "the pacing feels off".
 	const CHART_STEP = 1;
+
+	// Every phase is a PARALLEL 0→1 over its own step, never an extension of the
+	// one before: each has to stay pinned at its end state while the next runs, or
+	// the finished chart would unwind underneath the new beat.
+	const progressIn = (index: number) =>
+		step == null || step < index ? 0 : step > index ? 1 : (stepProgress ?? 0);
 
 	// Height of the animation step, in px — the scroll distance that one full unit
 	// of `p` costs (Scrollo divides by exactly this). It's what lets the prose
@@ -406,11 +545,8 @@
 	});
 
 	// Target reveal amount (0 = year 2000, 1 = year 2025) from scroll position.
-	let target = $derived.by(() => {
-		if (step == null || step < CHART_STEP) return 0; // before/at the intro
-		if (step > CHART_STEP) return 1; // past the scrub step
-		return stepProgress ?? 0; // scrubbing: follow progress
-	});
+	// 0 before/at the intro, 1 once the scrub step is behind us.
+	let target = $derived(progressIn(CHART_STEP));
 
 	// A tween smooths scroll jitter into fluid line growth, but it also *trails* the
 	// scroll by roughly this duration — the "slight lag" in the reveal. Lower it for
@@ -431,11 +567,7 @@
 	// Continuity: the instant `step` flips to MORPH_STEP, `stepProgress` is 0, so
 	// `morphTarget` is 0 too. No seam, and it reverses cleanly on scroll-up.
 	const MORPH_STEP = 2;
-	let morphTarget = $derived.by(() => {
-		if (step == null || step < MORPH_STEP) return 0;
-		if (step > MORPH_STEP) return 1;
-		return stepProgress ?? 0;
-	});
+	let morphTarget = $derived(progressIn(MORPH_STEP));
 	const morph = Tween.of(() => morphTarget, {
 		duration: MORPH_TWEEN_MS,
 		easing: cubicOut
@@ -446,6 +578,31 @@
 	let q = $derived(
 		cubicInOut(clamp((morph.current - morphStart) / (MORPH_END - morphStart)))
 	);
+
+	// ── Step 4 (`z`) and step 5 (`s`) ───────────────────────────────────────────
+	// Neither is tweened. `q` borrows the reveal's Tween so the two share one
+	// smoothing knob, but both of these are already eased below and a second
+	// clock buys nothing — the morph's own tween is set to 0ms in practice.
+	const ZOOM_STEP = 3;
+	const STACK_STEP = 4;
+	let zoomTarget = $derived(progressIn(ZOOM_STEP));
+	let stackTarget = $derived(progressIn(STACK_STEP));
+	// The U.S. leaves on the RAW step progress, before the zoom's window opens.
+	let usFade = $derived(1 - clamp(zoomTarget / US_EXIT_SPAN));
+	// cubicInOut for the same reason the morph uses it: the axis is a scale, and a
+	// linear ramp into and out of a 4.4× zoom reads as a jerk at both ends.
+	let z = $derived(
+		cubicInOut(clamp((zoomTarget - zoomStart) / (ZOOM_END - zoomStart)))
+	);
+	let s = $derived(
+		clamp((stackTarget - stackStart) / (STACK_END - stackStart))
+	);
+	// Bottom band first. Each band's own 0→1; `bandFade(0)` is Australia.
+	const bandFade = (i: number) =>
+		clamp((s - i * BAND_STAGGER) / BAND_FADE_SPAN);
+	// Cheapest possible gate: below this the stack marks don't mount at all, so
+	// the zoom step never pays to lay out four areas it can't see.
+	let stackVisible = $derived(s > 0.001);
 
 	// Chart decoration (axes, labels, grid) stays hidden until the reveal reaches
 	// `FADE_START` — letting the lines grow a little first — then fades in, fully
@@ -473,13 +630,15 @@
 	});
 
 	// ── 2016 crossover annotation ───────────────────────────────────────────────
-	// The lines cross (US = Australia per capita) between 2016 and 2017; ~2016.5.
-	// Kept in chart coordinates so the callout + leader stay anchored on resize.
-	// The crossover VALUE is a fact about the data, not a placement, so read it off
+	// Where the callout points: 2014, the year the two series sit closest together
+	// (US 4.44, Australia 4.49 per million — 1.2% apart, the tightest pair on the
+	// chart). Kept in chart coordinates so the callout + leader stay anchored on
+	// resize. The VALUE is a fact about the data, not a placement, so read it off
 	// the series instead of hardcoding it in whatever unit happened to be current
-	// (it used to be a bare 0.412, only meaningful on the old /100k axis). The two
-	// series are within ~0.5% of each other here, so their mean is the crossing.
-	const CROSS_YEAR = 2016.5;
+	// (it used to be a bare 0.412, only meaningful on the old /100k axis). With the
+	// two series that close, their mean is the midpoint between the year's dots —
+	// which is what the ring below is centred on.
+	const CROSS_YEAR = 2014;
 	const rateAt = (year: number, key: "usRate" | "auRate") => {
 		const i = data.findIndex((d) => d.year >= year);
 		if (i <= 0) return data[Math.max(i, 0)][key];
@@ -491,6 +650,16 @@
 		year: CROSS_YEAR,
 		value: (rateAt(CROSS_YEAR, "usRate") + rateAt(CROSS_YEAR, "auRate")) / 2
 	};
+	// The callout marker is a RING, not a filled dot: it encircles the year's two
+	// data dots rather than sitting on top of them, so once the dots grow in at the
+	// end of the reveal both are still readable inside it.
+	//
+	// Radius is in px, so it has to clear the worst case — the widest plot, where
+	// the two 2014 values are furthest apart. That gap is 0.051 of a 14-unit axis,
+	// ~2.4px on a 650px-tall plot, so each dot's centre sits ~1.2px off the ring
+	// centre and needs DOT_R (3) more to fit its edge. 9 leaves ~4.5px of clear
+	// space around the pair; drop it and the dots start touching the stroke.
+	const CROSS_RING_R = 9;
 	// Callout text position, per breakpoint. Heights are FRACTIONS OF THE AXIS —
 	// these are arbitrary placements, so pinning them to the domain keeps them put
 	// through a unit change.
@@ -505,7 +674,7 @@
 	let crossLabel = $derived(
 		isMobile ? CROSS_LABEL_MOBILE : CROSS_LABEL_DESKTOP
 	);
-	const CROSS_REVEAL = (CROSS.year - X0) / (X1 - X0); // ≈ 0.66
+	const CROSS_REVEAL = (CROSS.year - X0) / (X1 - X0); // ≈ 0.56
 	// Shared fade duration for ALL annotation text (intro, lead note, callout).
 	const CROSS_FADE_SPAN = 0.04;
 	// Leader line endpoints — symmetric gap from the text and the dot. LEADER_GAP
@@ -623,9 +792,8 @@
 	let scrolledSinceHandoff = $derived(Math.max(0, scrollY - handoffScrollY));
 
 	// ── Step 3's note ("raw numbers") ───────────────────────────────────────────
-	// Note 3 PARKS on both breakpoints: it's the last thing in the story, so
-	// "keep scrolling" would only strand it mid-frame at max scroll. That's why it
-	// needs no handoffScrollY analogue — the single biggest simplification here.
+	// Desktop PARKS it and then pushes it out when step 4 begins (see
+	// note3ExitTravel); mobile lets it keep scrolling, the same conveyor as note 2.
 	//
 	// Measured with the shared observeStep/measureStep helpers above; the intro
 	// note keeps its own effect because it observes a bound element and measures a
@@ -665,13 +833,112 @@
 		scrollYAt(morphStepTopPx, morphStepPx, note3Start)
 	);
 	let scrolledSinceNote3 = $derived(Math.max(0, scrollY - note3HandoffScrollY));
+	// Arrival fade only here; the desktop exit fade is applied further down, once
+	// step 4 (which drives it) has been derived.
+	let note3Arrival = $derived(
+		clamp((morphTarget - note3Start) / CROSS_FADE_SPAN)
+	);
+
+	// ── Steps 4 and 5: the zoom and stack notes ─────────────────────────────────
+	// Structurally note 3 repeated twice, so the two are built with one helper each
+	// rather than six more one-off deriveds. Each note rises 1:1 into place over
+	// its own step, then — on desktop, where it would otherwise park forever in
+	// front of the next beat — is pushed straight back out by the FOLLOWING step's
+	// progress. Mobile needs no exit: its shift is unbounded and already leaving.
+	//
+	// The measuring effects stay one-per-step and deliberately un-parameterised:
+	// `stepPx` feeds the 1:1 scroll math, and folding the observers together is
+	// what caused the mobile URL-bar jank the split above exists to prevent.
+	let zoomStepPx = $state(0);
+	let zoomStepTopPx = $state(0);
+	const setZoomStep = (h: number, top: number) => {
+		zoomStepPx = h;
+		zoomStepTopPx = top;
+	};
+	$effect(() => observeStep(ZOOM_STEP, setZoomStep));
+	$effect(() => {
+		void winH;
+		void width;
+		measureStep(ZOOM_STEP, setZoomStep);
+	});
+
+	let stackStepPx = $state(0);
+	let stackStepTopPx = $state(0);
+	const setStackStep = (h: number, top: number) => {
+		stackStepPx = h;
+		stackStepTopPx = top;
+	};
+	$effect(() => observeStep(STACK_STEP, setStackStep));
+	$effect(() => {
+		void winH;
+		void width;
+		measureStep(STACK_STEP, setStackStep);
+	});
+
+	// A note's rise: distance capped so it always completes by ARRIVE_BY, and the
+	// remaining offset in px (travel at arrival = 0).
+	const riseShift = (target: number, px: number, start: number) => {
+		const travel = capOf(px, LEAD_SHIFT, start);
+		const travelled = clamp((target - start) / spanOf(px, travel));
+		return { travel, shift: (1 - travelled) * travel };
+	};
+	// A note's exit, driven by the NEXT step: the same distance the intro note
+	// measured for clearing the top of the frame, and the same trailing fade the
+	// lead note uses. The fade is NOT decoration — that measured distance carries
+	// the note to the container's top edge, not past it, so on desktop clipping
+	// alone leaves a readable line or two behind (which is exactly what it did
+	// before this fade was added).
+	const exit = (nextTarget: number, nextPx: number) => {
+		const travel = capOf(
+			nextPx,
+			introExitPx > 0 ? introExitPx : NOTE_SHIFT_FALLBACK,
+			0
+		);
+		const exited = clamp(nextTarget / spanOf(nextPx, travel));
+		return {
+			shift: exited * travel,
+			fade: 1 - clamp((exited - (1 - INTRO_EXIT_FADE)) / INTRO_EXIT_FADE)
+		};
+	};
+
+	// Note 3 keeps its own rise (it starts from `note3Start`, not `noteStart`) but
+	// now gains an exit, because it is no longer the last note in the story.
+	let note3Exit = $derived(exit(zoomTarget, zoomStepPx));
 	let note3Shift = $derived(
 		isMobile
 			? note3Travel - scrolledSinceNote3 // rises in, then keeps going (negative)
-			: (1 - note3Travelled) * note3Travel // rises in, then parks at 0
+			: (1 - note3Travelled) * note3Travel - note3Exit.shift
 	);
-	let note3Opacity = $derived(
-		clamp((morphTarget - note3Start) / CROSS_FADE_SPAN)
+	let note3Opacity = $derived(note3Arrival * (isMobile ? 1 : note3Exit.fade));
+
+	let note4Rise = $derived(riseShift(zoomTarget, zoomStepPx, noteStart));
+	let note4Exit = $derived(exit(stackTarget, stackStepPx));
+	let scrolledSinceNote4 = $derived(
+		Math.max(0, scrollY - scrollYAt(zoomStepTopPx, zoomStepPx, noteStart))
+	);
+	let note4Shift = $derived(
+		isMobile
+			? note4Rise.travel - scrolledSinceNote4
+			: note4Rise.shift - note4Exit.shift
+	);
+	// Mobile keeps every note fully opaque — it leaves by scrolling, as a bottom
+	// card, and never shares the frame with the next one.
+	let note4Opacity = $derived(
+		clamp((zoomTarget - noteStart) / CROSS_FADE_SPAN) *
+			(isMobile ? 1 : note4Exit.fade)
+	);
+
+	// Note 5 is the last thing in the story, so it has no exit on either
+	// breakpoint — desktop parks it, mobile carries it on out as usual.
+	let note5Rise = $derived(riseShift(stackTarget, stackStepPx, noteStart));
+	let scrolledSinceNote5 = $derived(
+		Math.max(0, scrollY - scrollYAt(stackStepTopPx, stackStepPx, noteStart))
+	);
+	let note5Shift = $derived(
+		isMobile ? note5Rise.travel - scrolledSinceNote5 : note5Rise.shift
+	);
+	let note5Opacity = $derived(
+		clamp((stackTarget - noteStart) / CROSS_FADE_SPAN)
 	);
 
 	// Desktop lead note has to LEAVE now — it parks forever, and would otherwise
@@ -709,7 +976,9 @@
 	// Returns PLOTTED rows only: the interpolated cutoff point has no underlying
 	// counts, so usCount/auCount are dropped here by design (the tooltip reads
 	// `data`, never this). The explicit type is what makes that intentional
-	// rather than a hole.
+	// rather than a hole. The populations DO carry through — the morph rescales
+	// whatever is on screen, including the interpolated point — and interpolate
+	// the same way, which is how the sheet's own series behaves between years.
 	function clip(rows: typeof data, frac: number): PlotRow[] {
 		const cx = X0 + frac * (X1 - X0);
 		const out: PlotRow[] = [];
@@ -725,7 +994,9 @@
 			out.push({
 				year: cx,
 				usRate: a.usRate + t * (b.usRate - a.usRate),
-				auRate: a.auRate + t * (b.auRate - a.auRate)
+				auRate: a.auRate + t * (b.auRate - a.auRate),
+				usPop: a.usPop + t * (b.usPop - a.usPop),
+				auPop: a.auPop + t * (b.auPop - a.auPop)
 			});
 		}
 		return out;
@@ -739,18 +1010,36 @@
 	);
 
 	// ── The morph: per-capita → absolute counts ─────────────────────────────────
-	// A pure per-series LINEAR RESCALE, so there is no second dataset and no
-	// domain animation. count = rate × (POP/PER), and one count unit is
-	// (Y_MAX / Y_MAX_COUNT) axis units, so the entire transition collapses to one
-	// multiplier per series.
+	// A pure per-ROW LINEAR RESCALE, so there is no second dataset and no domain
+	// animation. count = rate × (pop/PER), and one count unit is
+	// (Y_MAX / Y_MAX_COUNT) axis units, so the transition collapses to a single
+	// multiplier per point — `gain` below.
+	//
+	// Per ROW, not per series: the populations are per year, so the multiplier
+	// grows along the x-axis (US 2.25 in 2000 → 2.78 in 2025; AU 0.153 → 0.216).
+	// Every property of the one-scalar version survives — it is still a pure
+	// linear rescale of each value, applied independently, with no dependence on
+	// anything off-row.
 	//
 	// The <Plot> y-domain stays [0, Y_MAX] throughout. SveltePlot short-circuits
 	// data extent when given an explicit domain, so the frame, margins and
 	// gridline POSITIONS are fixed by construction — only the values move.
-	const US_GAIN = (POP.us / PER) * (Y_MAX / Y_MAX_COUNT); // ≈ 1.914 (grows)
-	const AU_GAIN = (POP.au / PER) * (Y_MAX / Y_MAX_COUNT); // ≈ 0.152 (shrinks)
-	let usK = $derived(lerp(1, US_GAIN, q));
-	let auK = $derived(lerp(1, AU_GAIN, q));
+	//
+	// Step 4's zoom is the SAME trick one level up: one trial is worth more axis
+	// units when the axis tops out at 400 than when it tops out at 1750, so the
+	// zoom is just that constant becoming a variable. Still no domain animation,
+	// still no second dataset — which is also why the count gridlines have to be
+	// positioned through it rather than precomputed.
+	//
+	// Lerped as axis-units-per-count rather than as the count maximum: this way
+	// the drawn values grow at a constant rate through the zoom. Lerping 1750→400
+	// instead would ease itself, and fight the cubicInOut already on `z`.
+	const AXIS_PER_COUNT = Y_MAX / Y_MAX_COUNT;
+	const AXIS_PER_COUNT_AU = Y_MAX / Y_MAX_COUNT_AU;
+	let axisPerCount = $derived(lerp(AXIS_PER_COUNT, AXIS_PER_COUNT_AU, z));
+	const gain = (pop: number) => (pop / PER) * axisPerCount;
+	const morphed = (rate: number, pop: number, u: number) =>
+		rate * lerp(1, gain(pop), u);
 	// Field names stay usRate/auRate so not a single mark binding changes — only
 	// which array they read. At q === 0 this returns `visible` ITSELF, so the
 	// whole reveal phase allocates nothing extra and re-renders exactly as before.
@@ -758,13 +1047,33 @@
 		q === 0
 			? visible
 			: visible.map((d) => ({
-					year: d.year,
-					usRate: d.usRate * usK,
-					auRate: d.auRate * auK
+					...d,
+					usRate: morphed(d.usRate, d.usPop, q),
+					auRate: morphed(d.auRate, d.auPop, q)
 				}))
 	);
 	let plotHead = $derived(
 		plotRows.length ? plotRows[plotRows.length - 1] : null
+	);
+
+	// ── The sponsor stack (step 5) ──────────────────────────────────────────────
+	// One row list per band, in axis units. Split by sponsor once at module level
+	// (the shape never changes) and only converted to axis units while the stack
+	// is actually on screen — by then the zoom has finished, so `axisPerCount` is
+	// constant and this recomputes once rather than every frame.
+	const bandSeries = SPONSORS.map((sponsor) =>
+		bands.filter((b) => b.sponsor === sponsor)
+	);
+	let bandRows = $derived(
+		stackVisible
+			? bandSeries.map((rows) =>
+					rows.map((b) => ({
+						year: b.year,
+						y1: b.c0 * axisPerCount,
+						y2: b.c1 * axisPerCount
+					}))
+				)
+			: []
 	);
 
 	// Largest value drawn so far → which gridlines are "needed" yet. Non-decreasing
@@ -788,9 +1097,13 @@
 
 	// Year dots (one per line per year); they grow in together at the very end,
 	// radius = DOT_R * dotGrow. Static during the reveal (hence the one-shot
-	// tween), but they have to ride the morph, so they follow usK/auK once q > 0.
+	// tween), but they have to ride the morph, so they follow `morphed` once q > 0.
 	let yearDots = $derived(
-		data.map((d) => ({ year: d.year, us: d.usRate * usK, au: d.auRate * auK }))
+		data.map((d) => ({
+			year: d.year,
+			us: morphed(d.usRate, d.usPop, q),
+			au: morphed(d.auRate, d.auPop, q)
+		}))
 	);
 
 	// ── Dot tooltips ────────────────────────────────────────────────────────────
@@ -824,21 +1137,29 @@
 	//   the plotted value is a blend of two units and means nothing, so the numbers
 	//   must never be read off it. Handy side effect: the readout stays rock-steady
 	//   while the chart is moving underneath.
+	// Once the U.S. line has gone (step 4) its rows go with it: the dots would be
+	// off the top of the frame, so their hit targets would sit over Australian
+	// data pointing at a series the reader can no longer see. Australia's rows
+	// still carry the U.S. comparison, so nothing is lost from the readout.
 	let hoverRows = $derived(
 		data.flatMap((d) => [
-			{
-				year: d.year,
-				country: "us" as const,
-				y: d.usRate * usK,
-				rate: d.usRate,
-				count: d.usCount,
-				otherRate: d.auRate,
-				otherCount: d.auCount
-			},
+			...(usFade > 0
+				? [
+						{
+							year: d.year,
+							country: "us" as const,
+							y: morphed(d.usRate, d.usPop, q),
+							rate: d.usRate,
+							count: d.usCount,
+							otherRate: d.auRate,
+							otherCount: d.auCount
+						}
+					]
+				: []),
 			{
 				year: d.year,
 				country: "au" as const,
-				y: d.auRate * auK,
+				y: morphed(d.auRate, d.auPop, q),
 				rate: d.auRate,
 				count: d.auCount,
 				otherRate: d.usRate,
@@ -874,12 +1195,28 @@
 		clamp(Math.abs(q - LABEL_SWAP_AT) / LABEL_FADE_SPAN)
 	);
 	let showCounts = $derived(q >= LABEL_SWAP_AT);
-	let yLabel = $derived(
-		showCounts ? Y_LABEL_COUNT : `Phase 1 trials per ${PER_LABEL} residents ↑`
+	// The same V again, one step later: the 1,750 numbers hand over to the 400
+	// ones mid-zoom. Both sets are POSITIONED live either way (axisPerCount), so
+	// they zoom with the data and only their labels swap — what changes here is
+	// which set is legible, not where the lines are.
+	let zoomLabelFade = $derived(
+		clamp(Math.abs(z - ZOOM_LABEL_SWAP_AT) / ZOOM_LABEL_FADE_SPAN)
 	);
-	// Rate ticks own the axis before the swap, count ticks after it.
+	let showAuCounts = $derived(z >= ZOOM_LABEL_SWAP_AT);
+	let yLabel = $derived(
+		showAuCounts
+			? Y_LABEL_COUNT_AU
+			: showCounts
+				? Y_LABEL_COUNT
+				: `Phase 1 trials per ${PER_LABEL} residents ↑`
+	);
+	// Rate ticks own the axis before the first swap, the 1,750 counts between the
+	// two, Australia's 400 counts after the second.
 	let rateTickFade = $derived(showCounts ? 0 : labelFade);
-	let countTickFade = $derived(showCounts ? labelFade : 0);
+	let countTickFade = $derived(
+		showCounts && !showAuCounts ? labelFade * zoomLabelFade : 0
+	);
+	let auCountTickFade = $derived(showAuCounts ? labelFade * zoomLabelFade : 0);
 
 	// The 2016 callout is a claim about the per-capita chart, so it leaves at the
 	// very top of the morph — before the crossing it annotates starts sweeping.
@@ -1016,13 +1353,28 @@
 							{@render gridRow(t, tickLabel(t), tickOpacity(t) * rateTickFade)}
 						{/each}
 						<!-- Count ticks only mount once the morph starts, so the reveal phase
-						     renders exactly as before. -->
-						{#if q > 0}
-							{#each COUNT_TICKS as ct (ct.y)}
+						     renders exactly as before. Their y runs through axisPerCount, so
+						     they ride step 4's zoom out of the frame instead of sitting still
+						     while the data grows past them. -->
+						{#if q > 0 && countTickFade > 0}
+							{#each COUNT_TICKS as ct (ct)}
 								{@render gridRow(
-									ct.y,
-									ct.label,
+									ct * axisPerCount,
+									countLabel(ct),
 									decorationFade * countTickFade
+								)}
+							{/each}
+						{/if}
+						<!-- Australia's own count ticks, on the same live positions: they
+						     start the zoom compressed into the bottom fifth of the frame and
+						     expand into place, which is what makes the axis read as zooming
+						     rather than swapping. -->
+						{#if auCountTickFade > 0}
+							{#each AU_COUNT_TICKS as ct (ct)}
+								{@render gridRow(
+									ct * axisPerCount,
+									countLabel(ct),
+									decorationFade * auCountTickFade
 								)}
 							{/each}
 						{/if}
@@ -1046,16 +1398,42 @@
 							     0.32. Lighten the *_FILL constants to soften the bands; this
 							     number won't do it. The legend swatches use the raw constants
 							     for the same reason. -->
-							<DifferenceY
-								data={plotRows}
-								x="year"
-								y2="usRate"
-								y1="auRate"
-								positiveFill="United States higher"
-								negativeFill="Australia higher"
-								curve={CURVE}
-							/>
+							<!-- The whole US-vs-Australia comparison — fill and U.S. line — is
+							     gated on usFade rather than merely faded: once step 4 starts it
+							     is not just invisible but WRONG (on a 400-count axis the U.S.
+							     runs ~4× above the frame), and unmounting also takes its
+							     per-frame cost out of the zoom. -->
+							{#if usFade > 0}
+								<DifferenceY
+									data={plotRows}
+									x="year"
+									y2="usRate"
+									y1="auRate"
+									positiveFill="United States higher"
+									negativeFill="Australia higher"
+									curve={CURVE}
+									opacity={usFade}
+								/>
+							{/if}
 							<!-- Both series as lines. `scale: null` keeps the literal colours. -->
+							{#if stackVisible}
+								<!-- The sponsor stack. Drawn BEFORE the Australia line so the
+								     line stays the envelope of the bands — which it exactly is,
+								     the four counts summing to the Australian total. Each band
+								     is its own mark so it can carry its own opacity for the
+								     bottom-up reveal; only opacity animates, never geometry. -->
+								{#each bandRows as rows, i (SPONSORS[i])}
+									<AreaY
+										data={rows}
+										x="year"
+										y1="y1"
+										y2="y2"
+										fill={{ value: SPONSOR_COLORS[i], scale: null }}
+										curve={CURVE}
+										opacity={bandFade(i)}
+									/>
+								{/each}
+							{/if}
 							<Line
 								data={plotRows}
 								x="year"
@@ -1064,14 +1442,17 @@
 								strokeWidth={2.5}
 								curve={CURVE}
 							/>
-							<Line
-								data={plotRows}
-								x="year"
-								y="usRate"
-								stroke={{ value: US_COLOR, scale: null }}
-								strokeWidth={2.5}
-								curve={CURVE}
-							/>
+							{#if usFade > 0}
+								<Line
+									data={plotRows}
+									x="year"
+									y="usRate"
+									stroke={{ value: US_COLOR, scale: null }}
+									strokeWidth={2.5}
+									curve={CURVE}
+									opacity={usFade}
+								/>
+							{/if}
 							<!-- Year dots: TWO marks (one per series, all 26 points each). The
 							     radius grows in place via the dotGrow tween — 26× fewer marks than
 							     one-per-dot, and no top-left drift. -->
@@ -1085,15 +1466,18 @@
 									stroke="white"
 									strokeWidth={1}
 								/>
-								<Dot
-									data={yearDots}
-									x="year"
-									y="us"
-									r={DOT_R * dotGrow.current}
-									fill={{ value: US_COLOR, scale: null }}
-									stroke="white"
-									strokeWidth={1}
-								/>
+								{#if usFade > 0}
+									<Dot
+										data={yearDots}
+										x="year"
+										y="us"
+										r={DOT_R * dotGrow.current}
+										fill={{ value: US_COLOR, scale: null }}
+										stroke="white"
+										strokeWidth={1}
+										opacity={usFade}
+									/>
+								{/if}
 							{/if}
 						{/if}
 						{#if plotHead && p > 0.015}
@@ -1101,18 +1485,21 @@
 							     hug the line tip: US sits just above (lineAnchor bottom), Australia
 							     just below (lineAnchor top), so they stay clear of each other at the
 							     crossover but read as attached to the line ends. -->
-							<Text
-								data={[plotHead]}
-								x="year"
-								y="usRate"
-								text="U.S. 🇺🇸"
-								fill={{ value: US_COLOR, scale: null }}
-								fontWeight={600}
-								textAnchor="start"
-								lineAnchor="bottom"
-								dx={8}
-								dy={-2}
-							/>
+							{#if usFade > 0}
+								<Text
+									data={[plotHead]}
+									x="year"
+									y="usRate"
+									text="U.S. 🇺🇸"
+									fill={{ value: US_COLOR, scale: null }}
+									fontWeight={600}
+									textAnchor="start"
+									lineAnchor="bottom"
+									dx={8}
+									dy={-2}
+									opacity={usFade}
+								/>
+							{/if}
 							<Text
 								data={[plotHead]}
 								x="year"
@@ -1127,9 +1514,9 @@
 							/>
 						{/if}
 						{#if calloutFade > 0}
-							<!-- 2016 crossover callout. Leader line + dot + text, all in chart
+							<!-- 2014 crossover callout. Leader line + ring + text, all in chart
 							     coords so they stay anchored to the data point. Fades in quickly
-							     once the reveal scrubs past ~2016 (crossFade). -->
+							     once the reveal scrubs past 2014 (crossFade). -->
 							<Line
 								data={[leaderA, leaderB]}
 								x="year"
@@ -1142,8 +1529,10 @@
 								data={[CROSS]}
 								x="year"
 								y="value"
-								r={3.5}
-								fill={{ value: AXIS_MUTED, scale: null }}
+								r={CROSS_RING_R}
+								fill={{ value: "none", scale: null }}
+								stroke={{ value: AXIS_MUTED, scale: null }}
+								strokeWidth={1.25}
 								opacity={calloutFade}
 							/>
 							<!-- Desktop: text hangs BELOW its anchor (leader leaves upward-left).
@@ -1285,6 +1674,31 @@
 					{@html rawText}
 				</p>
 			{/if}
+
+			<!-- "Zoom in on Australia" note (the 4th step's copy). Rises like the two
+			     before it; on desktop it is pushed back out again by the 5th step,
+			     because it would otherwise park in front of the stack it introduces. -->
+			{#if zoomText}
+				<p
+					class="zoom-note"
+					style:opacity={note4Opacity}
+					style:--note-shift={`${note4Shift}px`}
+				>
+					{@html zoomText}
+				</p>
+			{/if}
+
+			<!-- Sponsor-breakdown note (the 5th step's copy). The last note in the
+			     story, so it has no exit: desktop parks it, mobile carries it out. -->
+			{#if stackText}
+				<p
+					class="stack-note"
+					style:opacity={note5Opacity}
+					style:--note-shift={`${note5Shift}px`}
+				>
+					{@html stackText}
+				</p>
+			{/if}
 		</div>
 	</div>
 
@@ -1299,6 +1713,8 @@
 		style:--intro-step-pad={INTRO_STEP_PADDING}
 		style:--anim-step-pad={ANIM_STEP_PADDING}
 		style:--morph-step-pad={MORPH_STEP_PADDING}
+		style:--zoom-step-pad={ZOOM_STEP_PADDING}
+		style:--stack-step-pad={STACK_STEP_PADDING}
 		style:--scrollo-container-trim={isMobile ? TAIL_TRIM_MOBILE : TAIL_TRIM}
 	>
 		<ScrolloSteps
@@ -1398,7 +1814,9 @@
 	   crossover (translateY via --note-shift, set inline). */
 	.intro-note,
 	.lead-note,
-	.raw-note {
+	.raw-note,
+	.zoom-note,
+	.stack-note {
 		position: absolute;
 		top: 12%;
 		left: 50%;
@@ -1425,14 +1843,18 @@
 	   rather than leaking the classes page-wide. */
 	.intro-note :global(.us),
 	.lead-note :global(.us),
-	.raw-note :global(.us) {
+	.raw-note :global(.us),
+	.zoom-note :global(.us),
+	.stack-note :global(.us) {
 		color: var(--us-color);
 		font-weight: 600;
 	}
 
 	.intro-note :global(.au),
 	.lead-note :global(.au),
-	.raw-note :global(.au) {
+	.raw-note :global(.au),
+	.zoom-note :global(.au),
+	.stack-note :global(.au) {
 		color: var(--au-color);
 		font-weight: 600;
 	}
@@ -1451,7 +1873,9 @@
 	@media (max-width: 768px) {
 		.intro-note,
 		.lead-note,
-		.raw-note {
+		.raw-note,
+		.zoom-note,
+		.stack-note {
 			width: 88%;
 			/* ScrolloSteps' MOBILE padding (`--scrollo-text-padding-mobile`), not its
 			   desktop `1rem` — a tight 0.1rem top/bottom so the card hugs the prose
@@ -1486,7 +1910,9 @@
 		   time note 3 arrives at the BOTTOM — which is what lets note 2 leave by
 		   scrolling rather than fading. */
 		.lead-note,
-		.raw-note {
+		.raw-note,
+		.zoom-note,
+		.stack-note {
 			top: auto;
 			bottom: 4%;
 		}
@@ -1603,10 +2029,11 @@
 
 	/* Per-step scroll length. Each step's height IS the scroll it is scrubbed
 	   against, so these three rules are pacing controls, not styling.
-	   The indices mirror CHART_STEP / MORPH_STEP in the script — keep them in sync.
+	   The indices mirror CHART_STEP / MORPH_STEP / ZOOM_STEP / STACK_STEP in the
+	   script — keep them in sync.
 	   Step 1 is listed explicitly even though it restates ScrolloSteps' default:
 	   without it the intro's length lives in a file nobody editing this story
-	   opens, while the other two sit here. */
+	   opens, while the rest sit here. */
 	.foreground-overlay :global(.step:nth-child(1)) {
 		padding-bottom: var(--intro-step-pad, 60vh);
 	}
@@ -1617,6 +2044,14 @@
 
 	.foreground-overlay :global(.step:nth-child(3)) {
 		padding-bottom: var(--morph-step-pad, 60vh);
+	}
+
+	.foreground-overlay :global(.step:nth-child(4)) {
+		padding-bottom: var(--zoom-step-pad, 60vh);
+	}
+
+	.foreground-overlay :global(.step:nth-child(5)) {
+		padding-bottom: var(--stack-step-pad, 60vh);
 	}
 
 	/* Colour the series names in the step copy to match the lines. */

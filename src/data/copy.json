@@ -2,15 +2,23 @@
   "story": [
     {
       "name": "us",
-      "text": "For the first 16 years of this millennium, the <span class=\"us\">U.S.</span> completed (??) more phase 1 trials per million residents than <span class=\"au\">Australia</span>."
+      "text": "For the first decade or so of this century, more Phase 1 clinical trials per million residents were run in the  <span class=\"us\">US</span> than <span class=\"au\">Australia</span>."
     },
     {
       "name": "australia",
-      "text": "However, since 2016 <span class=\"au\">Australia</span> has taken the lead in phase 1 trials per million residents, driven by [x] and [y] factors."
+      "text": "But beginning in 2014, <span class=\"au\">Australia</span>  took the lead and never looked back, driven largely by the speed with which these trials are run there."
     },
     {
       "name": "raw",
-      "text": "When we look at raw numbers, the US is still ahead by far…"
+      "text": "When we swap the y-scale to look at absolute numbers of Phase 1 trials, the US is still ahead by far, but growth has leveled off over the past decade, whereas Australian trials have more than doubled in that time frame."
+    },
+    {
+      "name": "zoom",
+      "text": "However, that’s not the end of the story. If we zoom in on Australia’s clinical trials…"
+    },
+    {
+      "name": "stack",
+      "text": "…and break them down by sponsorship country, the largest share belongs to the US, followed by Australia, then China, then other countries."
     }
   ]
 }
