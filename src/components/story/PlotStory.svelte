@@ -142,10 +142,22 @@
 	// Australia line, so the line needs no adjustment when the fill arrives.
 	// Bottom-to-top stacking order; the colours below ride in the same order.
 	const SPONSORS = ["Australia", "United States", "China", "Other"];
-	// Interim palette, carried over from the notebook prototype: Australia and the
-	// U.S. keep the hues they already have as lines. The final stacked-area
-	// palette — and the legend swap that goes with it — is still open.
-	const SPONSOR_COLORS = ["#4575b4", "#d73027", "#8c62aa", "#2a9d8f"];
+	// Australia and the U.S. keep the exact hues they carry as lines, so a band
+	// and its line are the same country. The other two are chosen against those:
+	// the four pass the adjacent-pair CVD check in stacking order (worst pair
+	// gold↔red, ΔE 12.2 deuteranopic, 17.9 normal).
+	//
+	// The gold replaces a purple that measured no darker (OKLab L 0.57, between
+	// the blue and the red) but READ darker, because it was the least chromatic
+	// hue on the chart sitting next to the lightest one. Lifting both lightness
+	// and chroma is what actually fixed it, not a different purple.
+	const SPONSOR_COLORS = ["#4575b4", "#d73027", "#d98a1f", "#2a9d8f"];
+	// Display names. The data keys double as the desktop labels — they are the
+	// sheet's own column headers and they read correctly — but the legend and the
+	// in-band labels need the short forms at 390px, matching the abbreviation the
+	// line-end label already uses ("Aus.").
+	const SPONSOR_SHORT = ["Aus.", "U.S.", "China", "Other"];
+	let sponsorLabels = $derived(isMobile ? SPONSOR_SHORT : SPONSORS);
 	// Excel's pivot header for the year column, kept verbatim rather than renamed
 	// in the CSV, so the file stays a straight paste of the sheet.
 	const SPONSOR_YEAR = "Row Labels";
@@ -165,15 +177,18 @@
 			});
 		});
 
+	// Each year's Australian total = the top of its last band. Used by the stack
+	// tooltip (for the share) and by the invariant check below.
+	const bandTotal = new Map(bands.map((b) => [b.year, b.c1]));
+
 	// The stack landing on the line is an invariant across two separate files, and
 	// it fails SILENTLY — the bands just stop reaching the line. So check it once.
 	if (import.meta.env.DEV) {
-		const total = new Map(bands.map((b) => [b.year, b.c1]));
-		const off = data.filter((d) => total.get(d.year) !== d.auCount);
+		const off = data.filter((d) => bandTotal.get(d.year) !== d.auCount);
 		if (off.length)
 			console.warn(
 				"[PlotStory] sponsor bands do not sum to the Australian total:",
-				off.map((d) => `${d.year}: ${total.get(d.year)} vs ${d.auCount}`)
+				off.map((d) => `${d.year}: ${bandTotal.get(d.year)} vs ${d.auCount}`)
 			);
 	}
 
@@ -347,6 +362,10 @@
 	// zoomed onto Australia alone.
 	const Y_LABEL_COUNT = "Phase 1 trials started ↑";
 	const Y_LABEL_COUNT_AU = "Phase 1 trials started in Australia ↑";
+	// The axis title shares its line with the legend, which grows from two items
+	// to four at exactly this point — at 390px the long form runs straight into
+	// the first swatch. Shortened only here, where the collision is.
+	const Y_LABEL_COUNT_AU_MOBILE = "Trials in Australia ↑";
 	// How much of Scrollo's trailing runway to reclaim. That runway
 	// (.scrollyContainer's padding-bottom, 100vh) is scroll where the chart is
 	// still pinned but nothing is animating.
@@ -1076,6 +1095,43 @@
 			: []
 	);
 
+	// Direct labels sit INSIDE the bands, so the four series can be read without
+	// looking away to the legend. 2022, not the 2024 peak: every band is thick
+	// enough there to hold a line of text, and at the peak the longest label runs
+	// off the right edge of the frame.
+	const BAND_LABEL_YEAR = 2022;
+	let bandLabels = $derived(
+		stackVisible
+			? bandSeries.map((rows, i) => {
+					const b = rows.find((r) => r.year === BAND_LABEL_YEAR);
+					return b
+						? {
+								year: b.year,
+								y: ((b.c0 + b.c1) / 2) * axisPerCount,
+								text: sponsorLabels[i]
+							}
+						: null;
+				})
+			: []
+	);
+
+	// The legend crossfades with the FIRST band, so the colour key is present as
+	// soon as there are colours to key. The tooltip waits for the LAST one: a
+	// readout for a band that hasn't appeared yet points at nothing, which is a
+	// worse failure than a legend that runs slightly ahead of the chart.
+	let stackKey = $derived(clamp(s / BAND_FADE_SPAN));
+	// The handover: `s` at which the last band is half in. Derived from the
+	// stagger rather than typed as a number, so retiming the reveal can't leave
+	// the tooltip and the dots disagreeing about when the stack takes over.
+	const STACK_HANDOVER =
+		(SPONSORS.length - 1) * BAND_STAGGER + BAND_FADE_SPAN * 0.5;
+	let stackTips = $derived(s >= STACK_HANDOVER);
+	// The year dots go with the line readout they belong to. Hit-testing passes to
+	// the bands at STACK_HANDOVER, so a dot still drawn after that is a target
+	// that no longer answers — they fade out over exactly that run and reach zero
+	// as the bands take over.
+	let dotFade = $derived(1 - clamp(s / STACK_HANDOVER));
+
 	// Largest value drawn so far → which gridlines are "needed" yet. Non-decreasing
 	// because `visible` always spans from 2000 to the moving cutoff.
 	//
@@ -1141,7 +1197,7 @@
 	// off the top of the frame, so their hit targets would sit over Australian
 	// data pointing at a series the reader can no longer see. Australia's rows
 	// still carry the U.S. comparison, so nothing is lost from the readout.
-	let hoverRows = $derived(
+	let lineTipRows = $derived(
 		data.flatMap((d) => [
 			...(usFade > 0
 				? [
@@ -1168,8 +1224,65 @@
 		])
 	);
 
+	// ── Step 5's readout: the bands hit-test themselves ─────────────────────────
+	// NOT HTMLTooltip. That mark searches a quadtree with a **hardcoded 25px
+	// radius** (svelteplot/marks/HTMLTooltip.svelte — there is no prop for it), so
+	// on a 700px-tall stack most of every band is dead space and the reader has to
+	// find the one live spot per year.
+	//
+	// The catch zones here TILE the plot instead: nearest year in x, containing
+	// band in y — which is exactly the region the reader sees, so neighbouring
+	// zones butt up against each other by construction. The readout still SNAPS to
+	// the band's own anchor (year, band midpoint), the point HTMLTooltip would
+	// have used, rather than trailing the pointer.
+	//
+	// Counts and share are the year's OWN numbers: the plotted y is a cumulative
+	// edge and means nothing on its own — the same trap the morph's readout dodges.
+	let bandHover = $state<{
+		year: number;
+		index: number;
+		count: number;
+		total: number;
+		px: number;
+		py: number;
+	} | null>(null);
+
+	// `scales` comes from Plot's overlay snippet, so this reads the chart's real
+	// scales rather than re-deriving the margin/inset arithmetic behind them.
+	// Ordinal or projected scales have no `invert`; bail rather than throw.
+	function hoverBand(evt: PointerEvent, scales: any) {
+		if (
+			typeof scales?.x?.fn?.invert !== "function" ||
+			typeof scales?.y?.fn?.invert !== "function"
+		)
+			return;
+		const box = (evt.currentTarget as HTMLElement).getBoundingClientRect();
+		const year = Math.round(scales.x.fn.invert(evt.clientX - box.left));
+		const count = scales.y.fn.invert(evt.clientY - box.top) / axisPerCount;
+		// Zero-height bands (a year with no trials from that country) can only be
+		// matched exactly, and the band below always wins the shared edge first —
+		// so an empty band is never hoverable.
+		const band = bands.find(
+			(b) => b.year === year && count >= b.c0 && count <= b.c1
+		);
+		bandHover = band
+			? {
+					year,
+					index: SPONSORS.indexOf(band.sponsor),
+					count: band.c1 - band.c0,
+					total: bandTotal.get(year) ?? 0,
+					px: scales.x.fn(year),
+					py: scales.y.fn(((band.c0 + band.c1) / 2) * axisPerCount)
+				}
+			: null;
+	}
+
 	const COUNTRY = { us: "United States", au: "Australia" } as const;
 	const fmtRate = (v: number) => v.toFixed(2);
+	// Rounded to whole percent; the one-in-a-few-hundred years floor at "<1%"
+	// rather than printing a 0% next to a non-zero count.
+	const fmtShare = (v: number) =>
+		v > 0 && v < 0.005 ? "<1%" : `${Math.round(v * 100)}%`;
 	const fmtCount = (v: number) => v.toLocaleString("en-US");
 	// Explicit sign, and a real minus (U+2212) rather than a hyphen. Hovered minus
 	// other, so positive always means "the country you're pointing at is ahead" —
@@ -1205,7 +1318,9 @@
 	let showAuCounts = $derived(z >= ZOOM_LABEL_SWAP_AT);
 	let yLabel = $derived(
 		showAuCounts
-			? Y_LABEL_COUNT_AU
+			? isMobile
+				? Y_LABEL_COUNT_AU_MOBILE
+				: Y_LABEL_COUNT_AU
 			: showCounts
 				? Y_LABEL_COUNT
 				: `Phase 1 trials per ${PER_LABEL} residents ↑`
@@ -1277,7 +1392,11 @@
 				     the same line as the y-axis title at the
 				     opposite end of the row. Fades in with the rest of the chart
 				     furniture via decorationFade. -->
-				<div class="legend" style:opacity={decorationFade}>
+				<div
+					class="legend"
+					style:opacity={decorationFade * (1 - stackKey)}
+					aria-hidden={stackKey > 0.5}
+				>
 					<span class="legend-item">
 						<i class="swatch" style:background={US_FILL}></i>U.S. leads
 					</span>
@@ -1291,6 +1410,21 @@
 						<i class="swatch" style:background={AU_FILL}></i>Australia leads
 					</span>
 				</div>
+
+				<!-- Sponsor key for steps 4–5, in the same slot so the two crossfade in
+				     place rather than one shifting the other. Left in the stacking order
+				     the bands are drawn in (bottom → top), which is also the order they
+				     fade in, so the key can be read alongside the reveal. -->
+				{#if stackKey > 0}
+					<div class="legend" style:opacity={decorationFade * stackKey}>
+						{#each SPONSORS as sponsor, i (sponsor)}
+							<span class="legend-item">
+								<i class="swatch" style:background={SPONSOR_COLORS[i]}
+								></i>{sponsorLabels[i]}
+							</span>
+						{/each}
+					</div>
+				{/if}
 
 				<!-- Render gate: wait for a real measurement before mounting Plot.
 				     On the first paint the container measures 0, which makes the plot
@@ -1429,9 +1563,29 @@
 										y1="y1"
 										y2="y2"
 										fill={{ value: SPONSOR_COLORS[i], scale: null }}
+										stroke={{ value: "white", scale: null }}
+										strokeWidth={1}
 										curve={CURVE}
 										opacity={bandFade(i)}
 									/>
+								{/each}
+								<!-- Names inside the bands. White ink on a saturated fill, so the
+								     text is the surface showing through rather than a fifth
+								     colour; it is also why the labels need the band to have
+								     arrived, hence the shared bandFade. -->
+								{#each bandLabels as label, i (SPONSORS[i])}
+									{#if label}
+										<Text
+											data={[label]}
+											x="year"
+											y="y"
+											text="text"
+											fill={{ value: "white", scale: null }}
+											fontWeight={600}
+											textAnchor="middle"
+											opacity={bandFade(i)}
+										/>
+									{/if}
 								{/each}
 							{/if}
 							<Line
@@ -1456,7 +1610,7 @@
 							<!-- Year dots: TWO marks (one per series, all 26 points each). The
 							     radius grows in place via the dotGrow tween — 26× fewer marks than
 							     one-per-dot, and no top-left drift. -->
-							{#if SHOW_DOTS && dotGrow.current > 0.001}
+							{#if SHOW_DOTS && dotGrow.current > 0.001 && dotFade > 0}
 								<Dot
 									data={yearDots}
 									x="year"
@@ -1465,6 +1619,7 @@
 									fill={{ value: AU_COLOR, scale: null }}
 									stroke="white"
 									strokeWidth={1}
+									opacity={dotFade}
 								/>
 								{#if usFade > 0}
 									<Dot
@@ -1500,6 +1655,10 @@
 									opacity={usFade}
 								/>
 							{/if}
+							<!-- Leaves with the arrival of the stack. By then the line is the
+							     TOTAL of four Australian bands, one of which is itself labelled
+							     "Australia" — two labels reading the same word for different
+							     quantities. The axis title already says whose chart this is. -->
 							<Text
 								data={[plotHead]}
 								x="year"
@@ -1511,6 +1670,7 @@
 								lineAnchor="top"
 								dx={8}
 								dy={2}
+								opacity={1 - stackKey}
 							/>
 						{/if}
 						{#if calloutFade > 0}
@@ -1557,15 +1717,73 @@
 						     left/top are right, so the anchor measures 0,0 and the box lands in the
 						     page corner. `overlay` renders into a real positioned div beside the svg.
 						-->
-						{#snippet overlay()}
-							{#if showTips}
+						{#snippet overlay({ scales }: { scales: any })}
+							{#if showTips && stackTips}
+								<!-- Full-area hit layer. .plot-overlay is inset:0 on the plot body and
+							     pointer-events:none, so this div's box IS the plot body's box, which
+							     is the coordinate space the scales project into. -->
+								<div
+									class="band-hit"
+									role="presentation"
+									onpointermove={(e) => hoverBand(e, scales)}
+									onpointerleave={() => (bandHover = null)}
+								></div>
+								{#if bandHover}
+									<!-- Same shape as HTMLTooltip's own wrapper: a zero-size, absolutely
+								     positioned anchor ON the datum, which the ring is drawn around and
+								     AnchoredTooltip measures to place the box. -->
+									<div
+										class="band-anchor"
+										style:left={`${bandHover.px}px`}
+										style:top={`${bandHover.py}px`}
+									>
+										<i
+											class="dot-grown"
+											style:--dot={SPONSOR_COLORS[bandHover.index]}
+										></i>
+										<AnchoredTooltip
+											key={bandHover}
+											offset={14}
+											align="center"
+											target=".scrollo-story"
+										>
+											<!-- Two rows, not the difference chart's three columns: there is
+										     no "other" series to compare against, and the share carries the
+										     year's total in its own label instead of spending a row on it. -->
+											<div class="ct-tip">
+												<div class="ct-tip-head">
+													<span class="ct-tip-year">{bandHover.year}</span>
+													<span
+														class="ct-tip-country"
+														style:color={SPONSOR_COLORS[bandHover.index]}
+													>
+														{SPONSORS[bandHover.index]}
+													</span>
+												</div>
+												<div class="ct-tip-grid ct-tip-grid-band">
+													<span class="ct-tip-label">trials</span>
+													{@render numCell(fmtCount(bandHover.count), null)}
+
+													<span class="ct-tip-label"
+														>share of {fmtCount(bandHover.total)}</span
+													>
+													{@render numCell(
+														fmtShare(bandHover.count / bandHover.total),
+														null
+													)}
+												</div>
+											</div>
+										</AnchoredTooltip>
+									</div>
+								{/if}
+							{:else if showTips}
 								<!-- HTMLTooltip runs its own nearest-point search and positions an
 							     absolute, pointer-events:none wrapper ON the hovered datum. That
 							     wrapper is doing double duty here: AnchoredTooltip measures it to
 							     place the floating box, and the highlight ring is simply drawn at
 							     its origin. One search, so the ring and the readout can never
 							     disagree about which dot is hovered. -->
-								<HTMLTooltip data={hoverRows} x="year" y={(d) => d.y || 1e-9}>
+								<HTMLTooltip data={lineTipRows} x="year" y={(d) => d.y || 1e-9}>
 									{#snippet children({ datum })}
 										{#if datum}
 											<!-- Reads as the real dot growing: same fill and white stroke
@@ -1756,6 +1974,19 @@
 	.plot-container :global(figure.svelteplot) {
 		width: var(--fig-w, 100%);
 		max-width: none;
+	}
+
+	/* Chart type size, in ONE place. SveltePlot writes `font-size: 11px` INLINE on
+	   every <text> it renders — its axis ticks and our own Text marks alike — so
+	   a stylesheet can only win with !important; there is no prop or custom
+	   property to set instead. The legend above reads the same variable, so the
+	   axis furniture and the key can't drift apart. */
+	.plot-container {
+		--chart-font-size: 12px;
+	}
+
+	.plot-container :global(svg text) {
+		font-size: var(--chart-font-size) !important;
 	}
 
 	.plot-container :global(svg) {
@@ -1981,6 +2212,26 @@
 		align-items: baseline;
 	}
 
+	/* The band hit layer has to opt back IN to pointer events — .plot-overlay
+	   turns them off for the whole overlay. */
+	.band-hit {
+		position: absolute;
+		inset: 0;
+		pointer-events: auto;
+	}
+
+	.band-anchor {
+		position: absolute;
+		width: 0;
+		height: 0;
+		pointer-events: none;
+	}
+
+	/* The stack readout has no comparison column, so it drops to label + value. */
+	:global(.ct-tip-grid-band) {
+		grid-template-columns: auto auto;
+	}
+
 	:global(.ct-tip-col) {
 		font-size: 10px;
 		text-transform: uppercase;
@@ -2110,8 +2361,8 @@
 		display: flex;
 		align-items: center;
 		gap: 14px;
-		font-size: 11px;
-		line-height: 13px;
+		font-size: var(--chart-font-size);
+		line-height: 14px;
 		pointer-events: none;
 	}
 
@@ -2139,6 +2390,12 @@
 
 	/* Mobile: near-full width for more chart room (the earlier reason for 100%). */
 	@media (max-width: 768px) {
+		/* Four sponsor items have to share the title's line; the desktop gap costs
+		   42px of it. */
+		.legend {
+			gap: 10px;
+		}
+
 		.plot-container {
 			width: 99%;
 			margin-left: 0.5%;

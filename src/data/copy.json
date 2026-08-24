@@ -18,7 +18,26 @@
     },
     {
       "name": "stack",
-      "text": "…and break them down by sponsorship country, the largest share belongs to the US, followed by Australia, then China, then other countries."
+      "text": "…and break them down by sponsorship country, the story changes. As of 2020, the largest share belongs to the US, followed by Australia, then China, then other countries."
     }
-  ]
+  ],
+  "footer": {
+    "note": "The note should read something like: Trials are counted by start year, 2000–2025. Australian figures combine ClinicalTrials.gov with the Australian New Zealand Clinical Trials Registry (ANZCTR); U.S. figures are ClinicalTrials.gov only. Per-capita rates use each year's own resident population rather than a single reference year. Sponsor country is the country of the trial's lead sponsor, not the trial site — every trial shown ran in Australia.",
+    "credit": "Alexander Kennedy",
+    "creditUrl": "https://cen.acs.org/staffDirectory/Alexander-Kennedy.html",
+    "sources": [
+      {
+        "name": "ClinicalTrials.gov",
+        "url": "https://clinicaltrials.gov/"
+      },
+      {
+        "name": "ANZCTR",
+        "url": "https://www.anzctr.org.au/"
+      },
+      {
+        "name": "UN World Population Prospects 2024",
+        "url": "https://population.un.org/wpp/"
+      }
+    ]
+  }
 }
