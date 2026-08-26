@@ -16,6 +16,7 @@
 	import chapters from "$data/plotStorySteps.json";
 	import csv from "$data/australiaPhase1Trials.csv";
 	import sponsorCsv from "$data/australiaSponsorCountry.csv";
+	import { color } from "d3";
 	import { Tween } from "svelte/motion";
 	import { cubicOut, cubicInOut } from "svelte/easing";
 	// import RefreshCopy from "$components/helpers/RefreshCopy.svelte";
@@ -169,14 +170,24 @@
 	// the blue and the red) but READ darker, because it was the least chromatic
 	// hue on the chart sitting next to the lightest one. Lifting both lightness
 	// and chroma is what actually fixed it, not a different purple.
-	const SPONSOR_COLORS = ["#4575b4", "#d73027", "#d98a1f", "#2a9d8f"];
-	// The same four for use as PROSE, where the fill colours don't all survive.
-	// As body text on white the gold measures 2.76:1 and the teal 3.32:1 — under
-	// the 4.5:1 floor — while the blue (4.71) and red (4.84) pass, which is why
-	// the existing .us/.au copy spans could use the line colours directly. Only
-	// the two failures are darkened, and only enough to clear the floor (4.62 and
-	// 5.16), so each still reads as the band it names.
-	const SPONSOR_INK = ["#4575b4", "#d73027", "#a5670b", "#1f7a6f"];
+	const SPONSOR_BASE = ["#4575b4", "#d73027", "#d98a1f", "#2a9d8f"];
+	// White band labels sit ON these fills, so each fill has to clear 4.5:1 against
+	// white (WCAG AA for normal text — the benchmark the copy desk is applying).
+	// At full strength the blue (4.71) and red (4.84) pass; the gold (2.76) and the
+	// teal (3.32) do not. These are the d3 `.darker()` amounts that just clear the
+	// floor — gold 4.62, teal 4.69 — kept as a dial rather than baked into hexes so
+	// they can be nudged up if she still reads them as too bright. One `.darker()`
+	// step is a full lab-L unit, so 0.1 here is a visible but small move.
+	const SPONSOR_DARKEN = [0, 0, 0.8, 0.55];
+	const SPONSOR_COLORS = SPONSOR_BASE.map((c, i) =>
+		SPONSOR_DARKEN[i] ? color(c)!.darker(SPONSOR_DARKEN[i]).formatHex() : c
+	);
+	// The same four as PROSE. White-on-fill and colour-as-text-on-white are the
+	// same contrast ratio, so now that every fill clears 4.5:1 the band colours can
+	// be the ink colours: the word "China" in the copy is exactly the band it names.
+	// (This used to be a separate hand-darkened list, needed only because the fills
+	// themselves were too light.)
+	const SPONSOR_INK = SPONSOR_COLORS;
 	// What the reader sees — deliberately SEPARATE from the keys above. The two
 	// lists used to be one, which meant a copy change ("United States" → "US")
 	// silently broke the CSV lookup and emptied the stack. They answer to
@@ -460,6 +471,34 @@
 	const DOT_R = 3; // full dot radius, px
 	const DOT_TRIGGER = 1; // reveal fraction at which the dots start growing in
 	const DOT_ANIM_MS = 450; // duration of the dot pop-in (its own clock)
+
+	// ── Flag emoji support ──────────────────────────────────────────────────────
+	// A flag is a PAIR of Regional Indicator characters (U+1F1FA + U+1F1F8 for the
+	// US) that the font is meant to ligate into one glyph. Windows ships no flag
+	// glyphs at all, so the pair falls back to two bare letterforms and the label
+	// reads "US US". No font stack fixes that — the glyphs aren't on the platform.
+	//
+	// So measure instead of guess: where flags render, the pair is ONE glyph and
+	// roughly as wide as a single indicator; where they don't, it is two letters
+	// and close to twice as wide. 1.5x sits clear of both cases.
+	//
+	// Starts FALSE and only turns on if the check passes, so the broken form is
+	// never shown, not even for a frame. Runs in an $effect, which doesn't execute
+	// during SSR — this page is prerendered, so there is no canvas at build time.
+	let hasFlagGlyphs = $state(false);
+
+	$effect(() => {
+		const ctx = document.createElement("canvas").getContext("2d");
+		if (!ctx) return;
+		ctx.font = "16px sans-serif";
+		const pair = ctx.measureText("\u{1F1FA}\u{1F1F8}").width;
+		const single = ctx.measureText("\u{1F1FA}").width;
+		hasFlagGlyphs = pair > 0 && single > 0 && pair < single * 1.5;
+	});
+
+	// Country labels wear their flag only where it will draw as a flag.
+	const withFlag = (label: string, flag: string) =>
+		hasFlagGlyphs ? `${label} ${flag}` : label;
 
 	// ── Copy ────────────────────────────────────────────────────────────────────
 	// Prose for the overlay notes comes from copy.json, which `pnpm gdoc`
@@ -1741,12 +1780,14 @@
 							     hug the line tip: US sits just above (lineAnchor bottom), Australia
 							     just below (lineAnchor top), so they stay clear of each other at the
 							     crossover but read as attached to the line ends. -->
+							<!-- Flags are added only where they render as flags — see
+							     hasFlagGlyphs. On Windows the label is just "US". -->
 							{#if usFade > 0}
 								<Text
 									data={[plotHead]}
 									x="year"
 									y="usRate"
-									text="US 🇺🇸"
+									text={withFlag("US", "\u{1F1FA}\u{1F1F8}")}
 									fill={{ value: US_COLOR, scale: null }}
 									fontWeight={600}
 									textAnchor="start"
@@ -1764,7 +1805,10 @@
 								data={[plotHead]}
 								x="year"
 								y="auRate"
-								text={isMobile ? "Aus. 🇦🇺" : "Australia 🇦🇺"}
+								text={withFlag(
+									isMobile ? "Aus." : "Australia",
+									"\u{1F1E6}\u{1F1FA}"
+								)}
 								fill={{ value: AU_COLOR, scale: null }}
 								fontWeight={600}
 								textAnchor="start"
