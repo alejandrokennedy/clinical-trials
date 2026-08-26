@@ -18,7 +18,7 @@
 	import sponsorCsv from "$data/australiaSponsorCountry.csv";
 	import { Tween } from "svelte/motion";
 	import { cubicOut, cubicInOut } from "svelte/easing";
-	import RefreshCopy from "$components/helpers/RefreshCopy.svelte";
+	// import RefreshCopy from "$components/helpers/RefreshCopy.svelte";
 
 	interface Props {
 		copy?: any;
@@ -26,20 +26,23 @@
 		progressBar?: boolean;
 	}
 
-	let {
-		copy: initialCopy,
-		darkMode = false,
-		progressBar = false
-	}: Props = $props();
-	let copy = $state(initialCopy);
-	const DOC_ID = "1WVnB5zR28cJgspAsq3rCqxWfd5ZKc0ifJtnBN0YVnyk";
+	let { copy, darkMode = false, progressBar = false }: Props = $props();
+	// LOCKED FOR PUBLICATION. The copy is whatever `pnpm gdoc` last wrote into
+	// src/data/copy.json — the doc is no longer fetched at page load, so an edit
+	// in Google Docs cannot change a published page under anyone's feet.
+	// To go back to live copy: uncomment the import above, the three lines below,
+	// and the <RefreshCopy> mark-up at the end of this file.
+	// let { copy: initialCopy, darkMode = false, progressBar = false }: Props = $props();
+	// let copy = $state(initialCopy);
+	// const DOC_ID = "1WVnB5zR28cJgspAsq3rCqxWfd5ZKc0ifJtnBN0YVnyk";
 
 	// Below this measured height the plot body computes negative and SveltePlot
 	// throws on `<rect height="-…">`. See the render gate in the markup.
 	const MIN_PLOT_H = 80;
 
 	// Used from the config block down, so it lives above everything that needs it.
-	const clamp = (v: number) => Math.min(1, Math.max(0, v));
+	const clamp = (v: number, min = 0, max = 1) =>
+		Math.min(max, Math.max(min, v));
 
 	let width = $state(1024);
 	let height = $state(800);
@@ -57,19 +60,32 @@
 	// notifications" → effect_update_depth_exceeded, which freezes the page).
 	// Debouncing the commit — and pinning the figure to the committed pixel width
 	// (see CSS) — keeps the plot's geometry stable through the drag.
-	let measuredWidth = $state(400);
-	let measuredHeight = $state(400);
-	let chartWidth = $state(400);
-	let chartHeight = $state(400);
+	// Start at ZERO, not at a placeholder size. `bind:clientWidth` only lands
+	// after mount, so any non-zero default is a real size for one frame — and the
+	// render gate below (`chartHeight >= MIN_PLOT_H`) happily passed the old
+	// 400x400, mounting a 400px chart in the corner of the frame for ~300ms
+	// before the true geometry arrived. Zero keeps that gate shut until there is
+	// something real to draw, which costs nothing: .plot-container is sized in CSS
+	// (height: 96%), so the box is already reserved and nothing shifts.
+	let measuredWidth = $state(0);
+	let measuredHeight = $state(0);
+	let chartWidth = $state(0);
+	let chartHeight = $state(0);
+	// Explicit, rather than inferred from the committed size. The old test
+	// (chartWidth === 400 && chartHeight === 400) also fired for a container that
+	// genuinely measured 400x400, which would have debounced its every resize.
+	let measured = $state(false);
 
 	$effect(() => {
 		const w = measuredWidth;
 		const h = measuredHeight;
+		// Nothing real yet — leave the gate shut rather than committing a guess.
+		if (!w || !h) return;
 		// Apply the very first real measurement immediately; debounce the rest.
-		const firstPaint = chartWidth === 400 && chartHeight === 400;
-		if (firstPaint) {
+		if (!measured) {
 			chartWidth = w;
 			chartHeight = h;
+			measured = true;
 			return;
 		}
 		const id = setTimeout(() => {
@@ -141,7 +157,9 @@
 	// which is the property the whole step rests on: the top of the stack IS the
 	// Australia line, so the line needs no adjustment when the fill arrives.
 	// Bottom-to-top stacking order; the colours below ride in the same order.
-	const SPONSORS = ["Australia", "United States", "China", "Other"];
+	// The sheet's own column headers. These are DATA KEYS: they index the CSV and
+	// tag every row in `bands`, so they must match the file exactly.
+	const SPONSOR_KEYS = ["Australia", "United States", "China", "Other"];
 	// Australia and the U.S. keep the exact hues they carry as lines, so a band
 	// and its line are the same country. The other two are chosen against those:
 	// the four pass the adjacent-pair CVD check in stacking order (worst pair
@@ -152,12 +170,20 @@
 	// hue on the chart sitting next to the lightest one. Lifting both lightness
 	// and chroma is what actually fixed it, not a different purple.
 	const SPONSOR_COLORS = ["#4575b4", "#d73027", "#d98a1f", "#2a9d8f"];
-	// Display names. The data keys double as the desktop labels — they are the
-	// sheet's own column headers and they read correctly — but the legend and the
-	// in-band labels need the short forms at 390px, matching the abbreviation the
-	// line-end label already uses ("Aus.").
-	const SPONSOR_SHORT = ["Aus.", "U.S.", "China", "Other"];
-	let sponsorLabels = $derived(isMobile ? SPONSOR_SHORT : SPONSORS);
+	// The same four for use as PROSE, where the fill colours don't all survive.
+	// As body text on white the gold measures 2.76:1 and the teal 3.32:1 — under
+	// the 4.5:1 floor — while the blue (4.71) and red (4.84) pass, which is why
+	// the existing .us/.au copy spans could use the line colours directly. Only
+	// the two failures are darkened, and only enough to clear the floor (4.62 and
+	// 5.16), so each still reads as the band it names.
+	const SPONSOR_INK = ["#4575b4", "#d73027", "#a5670b", "#1f7a6f"];
+	// What the reader sees — deliberately SEPARATE from the keys above. The two
+	// lists used to be one, which meant a copy change ("United States" → "US")
+	// silently broke the CSV lookup and emptied the stack. They answer to
+	// different owners: the keys to the spreadsheet, the labels to the copy desk.
+	const SPONSOR_LABELS = ["Australia", "US", "China", "Other"];
+	const SPONSOR_SHORT = ["Aus.", "US", "China", "Other"];
+	let sponsorLabels = $derived(isMobile ? SPONSOR_SHORT : SPONSOR_LABELS);
 	// Excel's pivot header for the year column, kept verbatim rather than renamed
 	// in the CSV, so the file stays a straight paste of the sheet.
 	const SPONSOR_YEAR = "Row Labels";
@@ -170,7 +196,7 @@
 		.filter((r) => /^\d{4}$/.test((r[SPONSOR_YEAR] ?? "").trim()))
 		.flatMap((r) => {
 			let acc = 0;
-			return SPONSORS.map((sponsor) => {
+			return SPONSOR_KEYS.map((sponsor) => {
 				const c0 = acc;
 				acc += +(r[sponsor] || 0);
 				return { year: +r[SPONSOR_YEAR], sponsor, c0, c1: acc };
@@ -240,8 +266,15 @@
 	// (see `axisPerCount`) or the numbers would sit still while the data zoomed.
 	// toFixed(2) not (1): at quarter steps 1250 would round to "1.3k". The unary +
 	// then strips the trailing zeros again, so 1000 → "1k", 1500 → "1.5k".
+	// Desktop spells thousands out with a comma; the copy desk doesn't use "k".
+	// Mobile keeps the abbreviation — "1,750" over "1.75k" costs axis gutter, and
+	// at 390px that comes straight out of the chart.
+	// toFixed(2) not (1) on the mobile form: at quarter steps 1250 would round to
+	// "1.3k". The unary + then strips the trailing zeros, so 1000 → "1k".
 	const countLabel = (v: number) =>
-		v >= 1000 ? `${+(v / 1000).toFixed(2)}k` : String(v);
+		isMobile && v >= 1000
+			? `${+(v / 1000).toFixed(2)}k`
+			: v.toLocaleString("en-US");
 	const ticksTo = (max: number, step: number) =>
 		Array.from({ length: Math.round(max / step) + 1 }, (_, i) => i * step);
 	const COUNT_TICKS = ticksTo(Y_MAX_COUNT, COUNT_TICK_STEP);
@@ -262,6 +295,7 @@
 	// Muted colour for axis ticks + labels (applied as `color`/currentColor).
 	const AXIS_MUTED = "#4b4b4b";
 	const CURVE = "catmull-rom";
+	// const CURVE = "linear";
 
 	// ── Config toggles ───────────────────────────────────────────────────────────
 	// Show the ScrolloSteps text boxes (bg + shadow). Off while the steps are empty;
@@ -428,8 +462,8 @@
 	const DOT_ANIM_MS = 450; // duration of the dot pop-in (its own clock)
 
 	// ── Copy ────────────────────────────────────────────────────────────────────
-	// Prose for the two overlay notes comes from copy.json, which `pnpm gdoc`
-	// regenerates from the Google Doc (DOC_ID above; see google.config.js).
+	// Prose for the overlay notes comes from copy.json, which `pnpm gdoc`
+	// regenerates from the Google Doc (see google.config.js for the doc id).
 	//
 	// Looked up by ArchieML `name`, NOT by array index — reordering the doc or
 	// inserting a block above them would otherwise silently swap the two notes.
@@ -657,7 +691,7 @@
 	// (it used to be a bare 0.412, only meaningful on the old /100k axis). With the
 	// two series that close, their mean is the midpoint between the year's dots —
 	// which is what the ring below is centred on.
-	const CROSS_YEAR = 2014;
+	const CROSS_YEAR = 2012;
 	const rateAt = (year: number, key: "usRate" | "auRate") => {
 		const i = data.findIndex((d) => d.year >= year);
 		if (i <= 0) return data[Math.max(i, 0)][key];
@@ -682,13 +716,19 @@
 	// Callout text position, per breakpoint. Heights are FRACTIONS OF THE AXIS —
 	// these are arbitrary placements, so pinning them to the domain keeps them put
 	// through a unit change.
-	//   Desktop — lower-RIGHT of the dot, in the wedge under the crossing lines.
-	//   Mobile   — upper-LEFT instead: the mobile lead note rests as a bottom card
-	//     (see `.lead-note` in the @media block), which lands on top of a
-	//     lower-right callout. The 2000–2015 × upper-half quadrant is empty on both
-	//     series (the U.S. peaks at ~47% of the axis, Australia stays under 35%
-	//     until 2016), so the text AND its leader clear the data.
-	const CROSS_LABEL_DESKTOP = { year: 2019, value: 0.2 * Y_MAX };
+	//
+	// BOTH now sit upper-LEFT of the dot. The 2000–2015 × upper-half quadrant is
+	// the one region empty on both series (they are still under 35% of the axis
+	// there), so the text and its leader clear the data on either breakpoint.
+	//   Desktop — closer in than mobile, on both axes. It has room to be: with the
+	//     crossover at 2012 a lower-right label ends up a long way from the dot,
+	//     and pulling the text up and left shortens the leader. Held at 0.42 of
+	//     the axis rather than mobile's 0.56 so it stays clear of the prose note
+	//     parked at the top of the frame.
+	//   Mobile  — further out, because the lead note rests as a bottom card there
+	//     (see `.lead-note` in the @media block) and the callout has to sit above
+	//     it rather than beside it.
+	const CROSS_LABEL_DESKTOP = { year: 2009, value: 0.42 * Y_MAX };
 	const CROSS_LABEL_MOBILE = { year: 2007.5, value: 0.56 * Y_MAX };
 	let crossLabel = $derived(
 		isMobile ? CROSS_LABEL_MOBILE : CROSS_LABEL_DESKTOP
@@ -1080,7 +1120,7 @@
 	// (the shape never changes) and only converted to axis units while the stack
 	// is actually on screen — by then the zoom has finished, so `axisPerCount` is
 	// constant and this recomputes once rather than every frame.
-	const bandSeries = SPONSORS.map((sponsor) =>
+	const bandSeries = SPONSOR_KEYS.map((sponsor) =>
 		bands.filter((b) => b.sponsor === sponsor)
 	);
 	let bandRows = $derived(
@@ -1124,7 +1164,7 @@
 	// stagger rather than typed as a number, so retiming the reveal can't leave
 	// the tooltip and the dots disagreeing about when the stack takes over.
 	const STACK_HANDOVER =
-		(SPONSORS.length - 1) * BAND_STAGGER + BAND_FADE_SPAN * 0.5;
+		(SPONSOR_KEYS.length - 1) * BAND_STAGGER + BAND_FADE_SPAN * 0.5;
 	let stackTips = $derived(s >= STACK_HANDOVER);
 	// The year dots go with the line readout they belong to. Hit-testing passes to
 	// the bands at STACK_HANDOVER, so a dot still drawn after that is a target
@@ -1224,60 +1264,78 @@
 		])
 	);
 
-	// ── Step 5's readout: the bands hit-test themselves ─────────────────────────
-	// NOT HTMLTooltip. That mark searches a quadtree with a **hardcoded 25px
-	// radius** (svelteplot/marks/HTMLTooltip.svelte — there is no prop for it), so
-	// on a 700px-tall stack most of every band is dead space and the reader has to
-	// find the one live spot per year.
+	// ── Step 5's readout: one panel for the whole year ─────────────────────────
+	// The hover picks a YEAR, not a band, and reports all four buckets at once.
+	// Three reasons it isn't four separate labels sitting inside the bands:
 	//
-	// The catch zones here TILE the plot instead: nearest year in x, containing
-	// band in y — which is exactly the region the reader sees, so neighbouring
-	// zones butt up against each other by construction. The readout still SNAPS to
-	// the band's own anchor (year, band midpoint), the point HTMLTooltip would
-	// have used, rather than trailing the pointer.
+	//   1. The reader's question at a stacked area is "how does this year split?",
+	//      a comparison across four numbers. Rows in one panel align and can be
+	//      scanned; four labels scattered up a column cannot.
+	//   2. In-band labels fail exactly where they are most needed. China is 0–4
+	//      trials from 2000 to 2013 — a band one to seven pixels tall — so the
+	//      encoding breaks over half the x-axis.
+	//   3. A panel listing the parts AND their total teaches the chart form, which
+	//      is the thing a stacked area is worst at explaining about itself.
 	//
-	// Counts and share are the year's OWN numbers: the plotted y is a cumulative
-	// edge and means nothing on its own — the same trap the morph's readout dodges.
-	let bandHover = $state<{
+	// NOT HTMLTooltip, which searches a quadtree with a hardcoded 25px radius (no
+	// prop for it), leaving most of a 700px-tall stack dead. The catch zones here
+	// are each year's full-height column, so they tile the plot completely.
+	let yearHover = $state<{
 		year: number;
-		index: number;
-		count: number;
-		total: number;
+		index: number | null; // band under the pointer; row emphasis only
 		px: number;
 		py: number;
 	} | null>(null);
 
+	// Per-year rows in the order the bands are stacked TOP-DOWN, so panel row 1 is
+	// the topmost band. That mapping is what lets a reader tie a number to a colour
+	// without reading the labels. (`bands` is built bottom-up, hence unshift.)
+	const yearRows = new Map<
+		number,
+		{ rows: { index: number; count: number }[]; total: number }
+	>();
+	for (const b of bands) {
+		const e = yearRows.get(b.year) ?? { rows: [], total: 0 };
+		e.rows.unshift({
+			index: SPONSOR_KEYS.indexOf(b.sponsor),
+			count: b.c1 - b.c0
+		});
+		e.total = Math.max(e.total, b.c1);
+		yearRows.set(b.year, e);
+	}
+
 	// `scales` comes from Plot's overlay snippet, so this reads the chart's real
 	// scales rather than re-deriving the margin/inset arithmetic behind them.
 	// Ordinal or projected scales have no `invert`; bail rather than throw.
-	function hoverBand(evt: PointerEvent, scales: any) {
+	function hoverYear(evt: PointerEvent, scales: any) {
 		if (
 			typeof scales?.x?.fn?.invert !== "function" ||
 			typeof scales?.y?.fn?.invert !== "function"
 		)
 			return;
 		const box = (evt.currentTarget as HTMLElement).getBoundingClientRect();
-		const year = Math.round(scales.x.fn.invert(evt.clientX - box.left));
-		const count = scales.y.fn.invert(evt.clientY - box.top) / axisPerCount;
-		// Zero-height bands (a year with no trials from that country) can only be
-		// matched exactly, and the band below always wins the shared edge first —
-		// so an empty band is never hoverable.
+		const py = evt.clientY - box.top;
+		const year = clamp(
+			Math.round(scales.x.fn.invert(evt.clientX - box.left)),
+			X0,
+			X1
+		);
+		// Which band the pointer sits in, if any — used only to emphasise that row.
+		// Above the stack top there is no band and the panel still shows: the
+		// column is the target, not the fill.
+		const count = scales.y.fn.invert(py) / axisPerCount;
 		const band = bands.find(
 			(b) => b.year === year && count >= b.c0 && count <= b.c1
 		);
-		bandHover = band
-			? {
-					year,
-					index: SPONSORS.indexOf(band.sponsor),
-					count: band.c1 - band.c0,
-					total: bandTotal.get(year) ?? 0,
-					px: scales.x.fn(year),
-					py: scales.y.fn(((band.c0 + band.c1) / 2) * axisPerCount)
-				}
-			: null;
+		yearHover = {
+			year,
+			index: band ? SPONSOR_KEYS.indexOf(band.sponsor) : null,
+			px: scales.x.fn(year),
+			py
+		};
 	}
 
-	const COUNTRY = { us: "United States", au: "Australia" } as const;
+	const COUNTRY = { us: "US", au: "Australia" } as const;
 	const fmtRate = (v: number) => v.toFixed(2);
 	// Rounded to whole percent; the one-in-a-few-hundred years floor at "<1%"
 	// rather than printing a 0% next to a non-zero count.
@@ -1362,6 +1420,10 @@
 	class:scrollo-dark={darkMode}
 	style:--us-color={US_COLOR}
 	style:--au-color={AU_COLOR}
+	style:--area-au={SPONSOR_INK[0]}
+	style:--area-us={SPONSOR_INK[1]}
+	style:--area-china={SPONSOR_INK[2]}
+	style:--area-other={SPONSOR_INK[3]}
 >
 	<div
 		id="background"
@@ -1398,7 +1460,7 @@
 					aria-hidden={stackKey > 0.5}
 				>
 					<span class="legend-item">
-						<i class="swatch" style:background={US_FILL}></i>U.S. leads
+						<i class="swatch" style:background={US_FILL}></i>US leads
 					</span>
 					<!-- Stays up through the morph, even though the blue BAND is gone by
 					     q ≈ 0.46 (the U.S. leads every year in absolute terms). It used to
@@ -1417,7 +1479,7 @@
 				     fade in, so the key can be read alongside the reveal. -->
 				{#if stackKey > 0}
 					<div class="legend" style:opacity={decorationFade * stackKey}>
-						{#each SPONSORS as sponsor, i (sponsor)}
+						{#each SPONSOR_KEYS as sponsor, i (sponsor)}
 							<span class="legend-item">
 								<i class="swatch" style:background={SPONSOR_COLORS[i]}
 								></i>{sponsorLabels[i]}
@@ -1543,7 +1605,7 @@
 									x="year"
 									y2="usRate"
 									y1="auRate"
-									positiveFill="United States higher"
+									positiveFill="US higher"
 									negativeFill="Australia higher"
 									curve={CURVE}
 									opacity={usFade}
@@ -1556,7 +1618,7 @@
 								     the four counts summing to the Australian total. Each band
 								     is its own mark so it can carry its own opacity for the
 								     bottom-up reveal; only opacity animates, never geometry. -->
-								{#each bandRows as rows, i (SPONSORS[i])}
+								{#each bandRows as rows, i (SPONSOR_KEYS[i])}
 									<AreaY
 										data={rows}
 										x="year"
@@ -1573,7 +1635,7 @@
 								     text is the surface showing through rather than a fifth
 								     colour; it is also why the labels need the band to have
 								     arrived, hence the shared bandFade. -->
-								{#each bandLabels as label, i (SPONSORS[i])}
+								{#each bandLabels as label, i (SPONSOR_KEYS[i])}
 									{#if label}
 										<Text
 											data={[label]}
@@ -1596,6 +1658,45 @@
 								strokeWidth={2.5}
 								curve={CURVE}
 							/>
+							<!-- Hovered-year rule. Stops AT that year's total rather than
+							     running the full frame height: it reads as the column the panel
+							     is describing, and its top lands on the Australia line, which
+							     is where the total lives. The dot is the one the reveal
+							     deliberately dropped, brought back for the hovered year only. -->
+							{#if stackTips && yearHover}
+								<Line
+									data={[
+										{ x: yearHover.year, y: 0 },
+										{
+											x: yearHover.year,
+											y:
+												(yearRows.get(yearHover.year)?.total ?? 0) *
+												axisPerCount
+										}
+									]}
+									x="x"
+									y="y"
+									stroke={{ value: "white", scale: null }}
+									strokeWidth={1.5}
+									opacity={0.9}
+								/>
+								<Dot
+									data={[
+										{
+											x: yearHover.year,
+											y:
+												(yearRows.get(yearHover.year)?.total ?? 0) *
+												axisPerCount
+										}
+									]}
+									x="x"
+									y="y"
+									r={4}
+									fill={{ value: AU_COLOR, scale: null }}
+									stroke="white"
+									strokeWidth={1.5}
+								/>
+							{/if}
 							{#if usFade > 0}
 								<Line
 									data={plotRows}
@@ -1645,7 +1746,7 @@
 									data={[plotHead]}
 									x="year"
 									y="usRate"
-									text="U.S. 🇺🇸"
+									text="US 🇺🇸"
 									fill={{ value: US_COLOR, scale: null }}
 									fontWeight={600}
 									textAnchor="start"
@@ -1695,19 +1796,20 @@
 								strokeWidth={1.25}
 								opacity={calloutFade}
 							/>
-							<!-- Desktop: text hangs BELOW its anchor (leader leaves upward-left).
-							     Mobile: the label sits upper-left, so the text must sit ABOVE its
-							     anchor — otherwise the leader would run down through the text. -->
+							<!-- The label sits upper-left on both breakpoints, so the text has
+							     to sit ABOVE its anchor — the leader leaves downward-right, and
+							     hanging the text below the anchor would run the leader straight
+							     through it. -->
 							<Text
 								data={[crossLabel]}
 								x="year"
 								y="value"
-								text={"Australia overtakes\nthe U.S. per capita"}
+								text={"Australia overtakes\nthe US per capita"}
 								fill={{ value: AU_COLOR, scale: null }}
 								fontWeight={600}
 								textAnchor="middle"
-								lineAnchor={isMobile ? "bottom" : "top"}
-								dy={isMobile ? -6 : 6}
+								lineAnchor="bottom"
+								dy={-6}
 								opacity={calloutFade}
 							/>
 						{/if}
@@ -1725,52 +1827,58 @@
 								<div
 									class="band-hit"
 									role="presentation"
-									onpointermove={(e) => hoverBand(e, scales)}
-									onpointerleave={() => (bandHover = null)}
+									onpointermove={(e) => hoverYear(e, scales)}
+									onpointerleave={() => (yearHover = null)}
 								></div>
-								{#if bandHover}
-									<!-- Same shape as HTMLTooltip's own wrapper: a zero-size, absolutely
-								     positioned anchor ON the datum, which the ring is drawn around and
-								     AnchoredTooltip measures to place the box. -->
+								{#if yearHover}
+									<!-- Anchored at the year's x but the pointer's y: the rule snaps to the
+								     column while the panel stays under the cursor, so it never jumps
+								     vertically as the reader moves within one year. -->
 									<div
 										class="band-anchor"
-										style:left={`${bandHover.px}px`}
-										style:top={`${bandHover.py}px`}
+										style:left={`${yearHover.px}px`}
+										style:top={`${yearHover.py}px`}
 									>
-										<i
-											class="dot-grown"
-											style:--dot={SPONSOR_COLORS[bandHover.index]}
-										></i>
 										<AnchoredTooltip
-											key={bandHover}
+											key={yearHover}
 											offset={14}
 											align="center"
 											target=".scrollo-story"
 										>
-											<!-- Two rows, not the difference chart's three columns: there is
-										     no "other" series to compare against, and the share carries the
-										     year's total in its own label instead of spending a row on it. -->
 											<div class="ct-tip">
 												<div class="ct-tip-head">
-													<span class="ct-tip-year">{bandHover.year}</span>
-													<span
-														class="ct-tip-country"
-														style:color={SPONSOR_COLORS[bandHover.index]}
+													<span class="ct-tip-year">{yearHover.year}</span>
+													<span class="ct-tip-country"
+														>Phase 1 trials in Australia</span
 													>
-														{SPONSORS[bandHover.index]}
-													</span>
 												</div>
-												<div class="ct-tip-grid ct-tip-grid-band">
-													<span class="ct-tip-label">trials</span>
-													{@render numCell(fmtCount(bandHover.count), null)}
-
-													<span class="ct-tip-label"
-														>share of {fmtCount(bandHover.total)}</span
+												<div class="ct-tip-grid ct-tip-grid-year">
+													{#each yearRows.get(yearHover.year)?.rows ?? [] as row (row.index)}
+														<span
+															class="ct-tip-label"
+															class:ct-tip-on={row.index === yearHover.index}
+														>
+															<i
+																class="ct-tip-swatch"
+																style:background={SPONSOR_COLORS[row.index]}
+															></i>{sponsorLabels[row.index]}
+														</span>
+														{@render numCell(fmtCount(row.count), null)}
+														{@render numCell(
+															fmtShare(
+																row.count /
+																	(yearRows.get(yearHover.year)?.total || 1)
+															),
+															null
+														)}
+													{/each}
+													<span class="ct-tip-label ct-tip-total">Total</span>
+													<span class="ct-tip-num ct-tip-total"
+														>{fmtCount(
+															yearRows.get(yearHover.year)?.total ?? 0
+														)}</span
 													>
-													{@render numCell(
-														fmtShare(bandHover.count / bandHover.total),
-														null
-													)}
+													<span class="ct-tip-num ct-tip-total"></span>
 												</div>
 											</div>
 										</AnchoredTooltip>
@@ -1945,7 +2053,8 @@
 	</div>
 
 	<!-- Pulls fresh copy from the gdoc on page reload; comment out to freeze. -->
-	<RefreshCopy docId={DOC_ID} bind:data={copy} />
+	<!-- uncomment below to pull directly from gdoc on page reload -->
+	<!-- <RefreshCopy docId={DOC_ID} bind:data={copy} /> -->
 </div>
 
 <style>
@@ -2048,6 +2157,16 @@
 	.raw-note,
 	.zoom-note,
 	.stack-note {
+		/* A soft white halo, not an outline: on desktop these notes sit directly
+		   over the chart with no card behind them, and by the last two steps that
+		   means saturated bands. Three stacked shadows rather than one — alpha
+		   compounds, so the halo gets dense enough to lift the text off a red or
+		   teal fill without the chunky look of the 8-direction stroke the mobile
+		   cards use (which still overrides this inside the @media block). */
+		text-shadow:
+			0 0 6px #fff,
+			0 0 6px #fff,
+			0 0 4px #fff;
 		position: absolute;
 		top: 12%;
 		left: 50%;
@@ -2087,6 +2206,35 @@
 	.zoom-note :global(.au),
 	.stack-note :global(.au) {
 		color: var(--au-color);
+		font-weight: 600;
+	}
+
+	/* The stacked-area spans. Same :global() reasoning as .us/.au above — the
+	   prose is injected with {@html}, so a scoped selector would be pruned. Named
+	   for the BAND rather than the country (.us-area, not .us) because they point
+	   at a fill in the last chart, not at a line in the earlier ones, and the two
+	   are different colours for the same country. */
+	.stack-note :global(.au-area),
+	.zoom-note :global(.au-area) {
+		color: var(--area-au);
+		font-weight: 600;
+	}
+
+	.stack-note :global(.us-area),
+	.zoom-note :global(.us-area) {
+		color: var(--area-us);
+		font-weight: 600;
+	}
+
+	.stack-note :global(.china-area),
+	.zoom-note :global(.china-area) {
+		color: var(--area-china);
+		font-weight: 600;
+	}
+
+	.stack-note :global(.other-area),
+	.zoom-note :global(.other-area) {
+		color: var(--area-other);
 		font-weight: 600;
 	}
 
@@ -2227,9 +2375,34 @@
 		pointer-events: none;
 	}
 
-	/* The stack readout has no comparison column, so it drops to label + value. */
-	:global(.ct-tip-grid-band) {
-		grid-template-columns: auto auto;
+	/* The year readout: swatch+name, count, share. */
+	:global(.ct-tip-grid-year) {
+		grid-template-columns: auto auto auto;
+		gap: 4px 12px;
+	}
+
+	:global(.ct-tip-swatch) {
+		display: inline-block;
+		width: 9px;
+		height: 9px;
+		border-radius: 2px;
+		margin-right: 6px;
+		vertical-align: baseline;
+	}
+
+	/* The band the pointer is actually inside. Weight only — recolouring the row
+	   would put a fifth use of the series colours in a box that already has four. */
+	:global(.ct-tip-on) {
+		font-weight: 700;
+		color: #242424;
+	}
+
+	/* Total sits under a hairline, so the four rows read as parts of it rather
+	   than as five peers. */
+	:global(.ct-tip-total) {
+		border-top: 1px solid rgba(0, 0, 0, 0.12);
+		padding-top: 4px;
+		margin-top: 1px;
 	}
 
 	:global(.ct-tip-col) {

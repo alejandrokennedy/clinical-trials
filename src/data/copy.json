@@ -2,27 +2,27 @@
   "story": [
     {
       "name": "us",
-      "text": "For the first decade or so of this century, more Phase 1 clinical trials per million residents were run in the  <span class=\"us\">US</span> than <span class=\"au\">Australia</span>."
+      "text": "From 2000 through 2011, more Phase 1 clinical trials per million residents were typically run in the  <span class=\"us\">US</span> than <span class=\"au\">Australia</span>."
     },
     {
       "name": "australia",
-      "text": "But beginning in 2014, <span class=\"au\">Australia</span>  took the lead and never looked back, driven largely by the speed with which these trials are run there."
+      "text": "But <span class=\"au\">Australia</span> has led every year since 2012, and the gap has only widened ever since."
     },
     {
       "name": "raw",
-      "text": "When we swap the y-scale to look at absolute numbers of Phase 1 trials, the US is still ahead by far, but growth has leveled off over the past decade, whereas Australian trials have more than doubled in that time frame."
+      "text": "When we swap the <i>y</i>-scale to look at absolute numbers of Phase 1 trials, the US is still ahead by far, but growth has leveled off since 2016, whereas Australian trials have more than doubled in that time frame."
     },
     {
       "name": "zoom",
-      "text": "However, that’s not the end of the story. If we zoom in on Australia’s clinical trials…"
+      "text": "But that’s not the end of the story. If we zoom in on Australia’s clinical trials . . ."
     },
     {
       "name": "stack",
-      "text": "…and break them down by sponsorship country, the story changes. As of 2020, the largest share belongs to the US, followed by Australia, then China, then other countries."
+      "text": ". . . and break them down by the country where the sponsor is headquartered, a different picture emerges. For every year since 2014, the largest share has belonged to the <span class=\"us-area\">US</span>; in recent years, that share has approached or reached 50% of all Australian trials. <span class=\"au-area\">Australia</span>, <span class=\"other-area\">other countries</span>, and <span class=\"china-area\">China</span> follow."
     }
   ],
   "footer": {
-    "note": "The note should read something like: Trials are counted by start year, 2000–2025. Australian figures combine ClinicalTrials.gov with the Australian New Zealand Clinical Trials Registry (ANZCTR); U.S. figures are ClinicalTrials.gov only. Per-capita rates use each year's own resident population rather than a single reference year. Sponsor country is the country of the trial's lead sponsor, not the trial site — every trial shown ran in Australia.",
+    "note": "Phase 1 trials are counted by start year, 2000–25. Australian figures combine information from ClinicalTrials.gov with information from the Australian New Zealand Clinical Trials Registry (ANZCTR); US figures are from ClinicalTrials.gov only. Trials with intervention type “Behavioral” in ClinicalTrials.gov and “Educational / counselling / training” in ANZCTR have been excluded. Sponsor country is the country where the trial's lead sponsor is headquartered, not the trial site—every trial shown in the stacked area chart ran in Australia. When the lead sponsor is a subsidiary, the sponsor country is the global headquarters of the parent company. Sponsors headquartered in Hong Kong or Taiwan are counted toward China.",
     "credit": "Alexander Kennedy",
     "creditUrl": "https://cen.acs.org/staffDirectory/Alexander-Kennedy.html",
     "sources": [

@@ -28,13 +28,23 @@
 	const copy = getContext<{ footer?: Footer | Footer[] }>("copy");
 	const data = getContext("data");
 
-	// Tolerate the block being written as an ArchieML ARRAY (`[footer]` … `[]`)
-	// rather than an object (`{footer}` … `{}`). The two differ by one character
-	// in the doc and the failure mode is silent — every key reads as undefined
-	// and the whole footer just stops rendering — so take the first entry rather
-	// than making the writer debug a punctuation mark.
+	// Two bits of tolerance for how the block gets typed in the Google Doc. Both
+	// failure modes are SILENT — the keys read as undefined and the footer simply
+	// stops rendering — which is a bad trade for a punctuation mistake, and both
+	// have already happened once:
+	//
+	//   1. `[footer]` … `[]` makes an ARRAY where `{footer}` … `{}` makes an
+	//      object. One character apart in the doc.
+	//   2. `Note:` / `Credit:` instead of `note:` / `credit:`. ArchieML keys are
+	//      case-sensitive; prose writers reasonably capitalise a label.
 	const raw = copy?.footer;
-	const footer: Footer = (Array.isArray(raw) ? raw[0] : raw) ?? {};
+	const block = (Array.isArray(raw) ? raw[0] : raw) ?? {};
+	const footer: Footer = Object.fromEntries(
+		Object.entries(block).map(([k, v]) => [
+			k.charAt(0).toLowerCase() + k.slice(1),
+			v
+		])
+	);
 </script>
 
 <svelte:boundary onerror={(e) => console.error(e)}>
