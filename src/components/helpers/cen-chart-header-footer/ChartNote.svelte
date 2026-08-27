@@ -1,10 +1,10 @@
 <script lang="ts">
 	// Methodology / explanatory note beneath a chart. Renders into AEM's same
-	// `.caption` class as ChartSource so production styling applies, but
-	// deliberately WITHOUT a bold "Note:" prefix to match it. "Source:" and
-	// "Credit:" label short attributions the eye skips to; this line is the
-	// sentence the reader is meant to actually read, and a label in front of it
-	// only announces that it is skippable. The scoped styles below mirror the live
+	// `.caption` class as ChartSource so production styling applies, and carries a
+	// bold "Note:" prefix to match its "Source:" — the three footer lines then
+	// read as one labelled set, and an unlabelled paragraph between two labelled
+	// ones looked like stray body copy. The prefix is boilerplate, so it lives
+	// here rather than in the copy doc. The scoped styles below mirror the live
 	// AEM computed values as a dev fallback, as the sibling components do.
 	//
 	// Rendered with {@html} deliberately. The text comes from the Google Doc via
@@ -15,7 +15,7 @@
 	let { text }: { text: string } = $props();
 </script>
 
-<div class="caption note">{@html text}</div>
+<div class="caption note"><b>Note:</b> {@html text}</div>
 
 <style>
 	.caption {
@@ -31,6 +31,13 @@
 			sans-serif;
 		font-size: 16px;
 		line-height: 24px;
+		color: #242424;
+	}
+
+	/* Matches ChartSource's prefix weight and colour so the two labels agree. AEM
+	   already styles `.caption b`; this is the dev fallback. */
+	.caption b {
+		font-weight: 700;
 		color: #242424;
 	}
 

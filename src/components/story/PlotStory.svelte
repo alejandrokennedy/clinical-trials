@@ -496,6 +496,19 @@
 		hasFlagGlyphs = pair > 0 && single > 0 && pair < single * 1.5;
 	});
 
+	// Drop any held readout the moment the chart moves or the layer goes away.
+	// The panel is position:FIXED, so a stale one does not scroll off with the
+	// chart — it hangs in the viewport over whatever is now there. Unmounting is
+	// not enough on its own: `scrolling` flips showTips false and then true again
+	// 150ms later, remounting with the previous yearHover still set. That is how a
+	// readout ended up floating over body copy well past the end of the story.
+	$effect(() => {
+		void scrollY;
+		void showTips;
+		void stackTips;
+		yearHover = null;
+	});
+
 	// Country labels wear their flag only where it will draw as a flag.
 	const withFlag = (label: string, flag: string) =>
 		hasFlagGlyphs ? `${label} ${flag}` : label;
@@ -1346,6 +1359,15 @@
 	// `scales` comes from Plot's overlay snippet, so this reads the chart's real
 	// scales rather than re-deriving the margin/inset arithmetic behind them.
 	// Ordinal or projected scales have no `invert`; bail rather than throw.
+	// How far outside the filled area the pointer may stray and still count as
+	// hovering the chart. Needed because the hit layer spans the whole plot body
+	// while the stack does not: in 2001 the bands are ~7px tall, so without a
+	// bound the entire empty upper-left corner of the frame answers for that year
+	// and anchors a readout hundreds of pixels from anything it describes.
+	// Measured from the stack's own top edge at the hovered year, so the live area
+	// follows the silhouette rather than being a fixed box.
+	const HOVER_SLOP = 100;
+
 	function hoverYear(evt: PointerEvent, scales: any) {
 		if (
 			typeof scales?.x?.fn?.invert !== "function" ||
@@ -1353,12 +1375,24 @@
 		)
 			return;
 		const box = (evt.currentTarget as HTMLElement).getBoundingClientRect();
+		const px = evt.clientX - box.left;
 		const py = evt.clientY - box.top;
-		const year = clamp(
-			Math.round(scales.x.fn.invert(evt.clientX - box.left)),
-			X0,
-			X1
-		);
+		const year = clamp(Math.round(scales.x.fn.invert(px)), X0, X1);
+		// Outside the live area — clear rather than leave the last reading up.
+		// pointermove fires on the way out, so this is what deactivates it.
+		const top = scales.y.fn((yearRows.get(year)?.total ?? 0) * axisPerCount);
+		const base = scales.y.fn(0);
+		const left = Math.min(scales.x.fn(X0), scales.x.fn(X1));
+		const right = Math.max(scales.x.fn(X0), scales.x.fn(X1));
+		if (
+			px < left - HOVER_SLOP ||
+			px > right + HOVER_SLOP ||
+			py < top - HOVER_SLOP ||
+			py > base + HOVER_SLOP
+		) {
+			yearHover = null;
+			return;
+		}
 		// Which band the pointer sits in, if any — used only to emphasise that row.
 		// Above the stack top there is no band and the panel still shows: the
 		// column is the target, not the fill.
